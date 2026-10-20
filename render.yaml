@@ -1,0 +1,28 @@
+# One-click setup on Render (render.com): New → Blueprint → pick this repository.
+services:
+  - type: web
+    name: life-audit-360
+    runtime: node
+    plan: starter            # a paid plan is needed for the persistent disk
+    buildCommand: "true"     # nothing to install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 5              # database + food photos (about 300 KB each); can be enlarged later
+    envVars:
+      - key: DATABASE_FILE
+        value: /data/la360.db
+      - key: BASE_URL
+        sync: false          # e.g. https://app.lifeaudit360.com
+      - key: ADMIN_EMAIL
+        sync: false          # the head coach's email, used on first start only
+      - key: ADMIN_NAME
+        sync: false          # the head coach's name, first start only
+      - key: ADMIN_PASSWORD
+        sync: false          # the head coach's password, first start only
+      - key: RESEND_API_KEY
+        sync: false          # optional: send invite emails through resend.com
+      - key: MAIL_FROM
+        sync: false          # optional: e.g. Life Audit 360 <hello@yourdomain.com>

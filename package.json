@@ -1,0 +1,17 @@
+{
+  "name": "life-audit-360",
+  "version": "0.1.0",
+  "description": "Life Audit 360 - a 14-day life audit program: participant phone app and coach dashboard",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "setup": "node --disable-warning=ExperimentalWarning scripts/setup.js",
+    "demo": "node --disable-warning=ExperimentalWarning scripts/setup.js --demo",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
+    "reset-password": "node --disable-warning=ExperimentalWarning scripts/reset-password.js"
+  }
+}
