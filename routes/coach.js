@@ -106,10 +106,10 @@ ${error ? html`<p class="flash err">${error}</p>` : ''}
 <label class="fld"><span>Full name</span><input name="name" value="${v.name || ''}" required maxlength="100" autofocus></label>
 <label class="fld"><span>Email</span><input type="email" name="email" value="${v.email || ''}" required maxlength="200"></label>
 <label class="fld"><span>Mobile phone <em>optional</em></span><input type="tel" name="phone" value="${v.phone || ''}" maxlength="40"></label>
-<label class="fld"><span>Day 1 is</span><input type="date" name="start_date" value="${v.start_date || P.addDays(P.todayIn(ctx.user.timezone), 1)}" required></label>
+<label class="fld"><span>Day 1 is</span><input type="date" name="start_date" value="${v.start_date || P.todayIn(ctx.user.timezone)}" required></label>
 ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select name="coach_id">${coachOptions(db, Number(v.coach_id) || ctx.user.id)}</select></label>` : ''}
 <label class="fld"><span>Their time zone</span>${tzSelect('timezone', v.timezone || ctx.user.timezone)}</label>
-<p class="hint span2">They’ll get a link to choose a password. On Day 1 the app shows their first daily audit. Each day changes over at midnight in their time zone.</p>
+<p class="hint span2">Day 1 can be today. They’ll get a link to choose a password. On Day 1 the app shows their first daily audit. Each day changes over at midnight in their time zone.</p>
 <div class="span2"><button class="btn primary">Create and send invite</button> <a class="btn ghost" href="/participants">Cancel</a></div></form>`,
   });
 
@@ -127,7 +127,7 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
       if (c) coachId = c.id;
     }
     const existing = db.get('SELECT * FROM users WHERE email=?', v.email);
-    if (existing) return ctx.html(inviteForm(ctx, v, existing.role === 'participant' ? `${existing.name} already has an account with that email. Open their page to start a new program.` : 'That email belongs to a coach.'), 400);
+    if (existing) return ctx.html(inviteForm(ctx, v, existing.role === 'participant' ? `${existing.name} is already set up with that email. To change their Day 1, open their page and use “Start today” or Settings.` : 'That email belongs to a coach.'), 400);
     const now = new Date().toISOString();
     const id = db.tx(() => {
       const uid = db.insert('users', { role: 'participant', name: v.name, email: v.email, phone: v.phone || null, coach_id: coachId, timezone: v.timezone, created_at: now });
@@ -165,7 +165,8 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
     ctx.html(layout(ctx, { title: p.name, nav: 'people', body: html`
 <div class="page-head person"><div><p class="eyebrow"><a href="/participants">Participants</a></p><h1>${p.name}</h1>
 <p class="muted">${p.email}${p.phone ? html` · <a href="tel:${p.phone}">${p.phone}</a>` : ''}${coach ? html` · Coach: ${coach.name}` : ''}</p>${inviteNote(ctx, p, `/participants/${p.id}`)}</div>
-<div class="head-state">${stateLabel(s)}${s.e ? html`<small>${dateFmt(s.e.start_date)} – ${dateFmt(s.pos.endDate)}</small>` : ''}</div></div>
+<div class="head-state">${stateLabel(s)}${s.e ? html`<small>${dateFmt(s.e.start_date)} – ${dateFmt(s.pos.endDate)}</small>` : ''}
+${s.e && !s.pos.started ? html`<form method="post" action="/participants/${p.id}/start-today">${csrfField(ctx)}<button class="btn small primary">Start today</button></form>` : ''}</div></div>
 ${s.e ? html`<div class="person-strip">${dayStrip(s.map, s.pos, { link: (d) => `${base}?tab=day&day=${d}` })}<div class="person-stats"><span><b>${s.completion.done}</b>/${s.completion.of} days complete</span><span><b>${P.streak(s.map, s.pos)}</b> day streak</span><span>Last entry <b>${s.lastEntry ? dateTimeFmt(s.lastEntry, ctx.user.timezone) : 'none yet'}</b></span></div></div>` : ''}
 <nav class="tabs">${tabs.map(([k, l]) => html`<a href="${base}?tab=${k}" class="${tab === k ? 'on' : ''}">${l}</a>`)}</nav>
 <div class="tab-body">${body}</div>`,
@@ -228,7 +229,7 @@ ${s.e ? html`<label class="fld"><span>Day 1 of this program</span><input type="d
 <section class="panel"><h3>Sign-in link</h3><p class="muted">Send a new link if they lost the invite or forgot their password. Any older link stops working.</p>
 <form method="post" action="/participants/${p.id}/invite">${csrfField(ctx)}<button class="btn">Send a new sign-in link</button></form></section>
 <section class="panel"><h3>Start another 14 days</h3><p class="muted">Starts a fresh program. The earlier one is kept on record.</p>
-<form method="post" action="/participants/${p.id}/restart" class="inline">${csrfField(ctx)}<input type="date" name="start_date" value="${P.addDays(P.todayIn(p.timezone), 1)}" required> <button class="btn" data-confirm="Start a new 14-day program for ${p.name}?">Start new program</button></form>
+<form method="post" action="/participants/${p.id}/restart" class="inline">${csrfField(ctx)}<input type="date" name="start_date" value="${P.todayIn(p.timezone)}" required> <button class="btn" data-confirm="Start a new 14-day program for ${p.name}?">Start new program</button></form>
 ${pastPrograms(ctx, p)}</section>
 <section class="panel danger"><h3>Remove</h3><p class="muted">They can’t sign in any more and disappear from your list. Their answers are kept.</p>
 <form method="post" action="/participants/${p.id}/deactivate">${csrfField(ctx)}<button class="btn danger" data-confirm="Remove ${p.name}? They won’t be able to sign in.">Remove participant</button></form></section>
@@ -295,6 +296,17 @@ ${pastPrograms(ctx, p)}</section>
 <section class="panel invite-done"><p>${emailed ? html`We emailed it to <b>${p.email}</b>. You can also send it yourself:` : html`Email isn’t set up on this site, so send them this link yourself:`}</p>
 <div class="copy"><input readonly value="${link}" data-copy><button type="button" class="btn" data-copybtn>Copy link</button></div>
 <p><a class="btn" href="/participants/${p.id}">Back to ${firstName(p.name)}</a></p></section>` }));
+  }, O);
+
+  // Program hasn't started yet: make today Day 1
+  r.post('/participants/:id/start-today', (ctx) => {
+    const p = participantFor(ctx, ctx.params.id);
+    const e = P.currentEnrollment(db, p.id);
+    const today = P.todayIn(p.timezone);
+    if (!e) throw new HttpError(400, 'No program.');
+    if (e.start_date > today) db.run('UPDATE enrollments SET start_date=? WHERE id=?', today, e.id);
+    ctx.setFlash(`${firstName(p.name)}’s program starts today. Day 1 is open in their app.`);
+    ctx.redirect(`/participants/${p.id}`);
   }, O);
 
   r.post('/participants/:id/restart', (ctx) => {

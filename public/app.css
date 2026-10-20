@@ -386,3 +386,4 @@ body.phone .cmp-row { grid-template-columns: 124px 30px 14px 30px 1fr; }
 .invite-note .warn-text { display: inline; font-size: 13px; }
 .invite-note form { display: inline; }
 .list .invite-note .btn.small { min-height: 30px; padding: 4px 12px; font-size: 12.5px; }
+.head-state form { margin-top: 8px; }

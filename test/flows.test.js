@@ -130,6 +130,14 @@ test('the whole program flow', async (t) => {
   assert.equal((await other.get(`/photo/${up.json.id}`)).status, 403);
   assert.doesNotMatch((await other.get('/participants?show=all')).text, /Pat Test/);
   assert.equal((await other.get('/coaches')).status, 403, 'only the head coach manages coaches');
+
+  // A program set to start later can be moved to today with one click
+  await coach.post('/participants/new', { name: 'Later Person', email: 'later@x.test', start_date: P.addDays(today, 3), timezone: 'America/Los_Angeles' });
+  const lid = db.get("SELECT id FROM users WHERE email='later@x.test'").id;
+  assert.match((await coach.get(`/participants/${lid}`)).text, /Start today/);
+  await coach.post(`/participants/${lid}/start-today`);
+  assert.equal(P.currentEnrollment(db, lid).start_date, today);
+  assert.match((await coach.get('/participants/new')).text, new RegExp(`value="${today}"`), 'new invites default to today');
 });
 
 test('scoring: week analysis, focus areas and comparison', () => {
