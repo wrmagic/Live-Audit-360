@@ -33,7 +33,7 @@ small { font-size: 12.5px; }
 .kbd { display: inline-block; border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; background: var(--cream); font-size: 13px; }
 
 /* ---------- buttons and inputs */
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font: 600 15px var(--body); padding: 11px 18px; border-radius: 999px; border: 1.5px solid var(--ink); background: #fff; color: var(--ink); cursor: pointer; text-decoration: none; min-height: 44px; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font: 600 15px var(--body); padding: 11px 18px; border-radius: 999px; border: 1.5px solid var(--ink); background: #fff; color: var(--ink); cursor: pointer; text-decoration: none; min-height: 44px; white-space: nowrap; }
 .btn:hover { background: var(--cream-2); }
 .btn.primary { background: linear-gradient(135deg, var(--sun-2), var(--sun) 55%, var(--ember)); border-color: transparent; color: #fff; box-shadow: 0 4px 14px rgba(242, 106, 33, .35); }
 .btn.primary:hover { filter: brightness(1.05); }
@@ -381,3 +381,8 @@ body.has-hero .pmain { padding-top: 0; }
 body.phone .card.two { grid-template-columns: 1fr; }
 body.phone .bar-row { grid-template-columns: 124px 1fr 32px; }
 body.phone .cmp-row { grid-template-columns: 124px 30px 14px 30px 1fr; }
+
+.invite-note { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; }
+.invite-note .warn-text { display: inline; font-size: 13px; }
+.invite-note form { display: inline; }
+.list .invite-note .btn.small { min-height: 30px; padding: 4px 12px; font-size: 12.5px; }

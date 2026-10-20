@@ -23,6 +23,15 @@ function summary(db, p) {
   return { p, e, pos, map, lastEntry, report, week, idle, completion: P.completion(map, pos) };
 }
 
+/** For someone who hasn't chosen a password yet: when the last invite went out, and whether it has expired. */
+function inviteNote(ctx, p, next) {
+  if (p.password_hash) return '';
+  const sent = p.invite_expires ? new Date(new Date(p.invite_expires) - require('../lib/auth').INVITE_DAYS * 864e5).toISOString() : null;
+  const expired = !p.invite_expires || p.invite_expires < new Date().toISOString();
+  return html`<span class="invite-note"><span class="warn-text">${expired ? 'Invite expired' : 'Invite not accepted yet'}${sent ? ` · sent ${dateTimeFmt(sent, ctx.user.timezone)}` : ''}</span>
+<form method="post" action="/participants/${p.id}/invite">${csrfField(ctx)}<input type="hidden" name="next" value="${next}"><button class="btn small">Resend invite</button></form></span>`;
+}
+
 function stateLabel(s) {
   if (!s.e) return html`<span class="pill">No program</span>`;
   if (!s.pos.started) return html`<span class="pill">Starts ${dateFmt(s.e.start_date, 'dow')}</span>`;
@@ -34,7 +43,7 @@ function todayMarks(s) {
   if (!s.pos || !s.pos.started || s.pos.finished) return '';
   const got = s.map[s.pos.day] || {};
   return html`<span class="marks">${F.formsForDay(s.pos.day).map((k) => {
-    const r = got[k]; const st = r && r.total && r.answered >= r.total ? 'done' : r && r.answered ? 'partial' : 'empty';
+    const r = got[k]; const st = r && r.total && r.answered >= r.total ? 'done' : r && r.answered ? 'partial' : 'todo';
     return html`<span class="mark ${st}" title="${F.FORMS[k].title}">${{ day1: 'Part 1', day2: 'Part 2', week1: 'Review 1', week2: 'Review 2' }[k] || F.FORMS[k].short}</span>`;
   })}</span>`;
 }
@@ -79,7 +88,7 @@ module.exports = (r, { db }) => {
 ${list.length ? html`<table class="list"><thead><tr><th>Participant</th>${head ? html`<th>Coach</th>` : ''}<th>Program</th><th>Today</th><th>Days complete</th><th>Top challenges</th><th>Last entry</th></tr></thead><tbody>
 ${list.map((s) => {
     const w = s.report ? s.report[s.week === 2 ? 'w2' : 'w1'] : null;
-    return html`<tr class="${s.idle ? 'idle' : ''}" data-href="/participants/${s.p.id}"><td><a href="/participants/${s.p.id}"><b>${s.p.name}</b></a><small>${s.p.email}</small>${s.p.password_hash ? '' : html`<small class="warn-text">Hasn’t accepted invite</small>`}</td>
+    return html`<tr class="${s.idle ? 'idle' : ''}" data-href="/participants/${s.p.id}"><td><a href="/participants/${s.p.id}"><b>${s.p.name}</b></a><small>${s.p.email}</small>${inviteNote(ctx, s.p, ctx.url.pathname + ctx.url.search)}</td>
 ${head ? html`<td>${s.p.coach_name || '—'}</td>` : ''}
 <td>${stateLabel(s)}</td><td>${todayMarks(s)}</td>
 <td>${s.pos && s.pos.started ? html`<span class="meter"><span style="width:${s.completion.pct}%"></span></span> ${s.completion.done}/${s.completion.of}` : '—'}</td>
@@ -155,7 +164,7 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
 
     ctx.html(layout(ctx, { title: p.name, nav: 'people', body: html`
 <div class="page-head person"><div><p class="eyebrow"><a href="/participants">Participants</a></p><h1>${p.name}</h1>
-<p class="muted">${p.email}${p.phone ? html` · <a href="tel:${p.phone}">${p.phone}</a>` : ''}${coach ? html` · Coach: ${coach.name}` : ''}${p.password_hash ? '' : html` · <span class="warn-text">Hasn’t accepted the invite yet</span>`}</p></div>
+<p class="muted">${p.email}${p.phone ? html` · <a href="tel:${p.phone}">${p.phone}</a>` : ''}${coach ? html` · Coach: ${coach.name}` : ''}</p>${inviteNote(ctx, p, `/participants/${p.id}`)}</div>
 <div class="head-state">${stateLabel(s)}${s.e ? html`<small>${dateFmt(s.e.start_date)} – ${dateFmt(s.pos.endDate)}</small>` : ''}</div></div>
 ${s.e ? html`<div class="person-strip">${dayStrip(s.map, s.pos, { link: (d) => `${base}?tab=day&day=${d}` })}<div class="person-stats"><span><b>${s.completion.done}</b>/${s.completion.of} days complete</span><span><b>${P.streak(s.map, s.pos)}</b> day streak</span><span>Last entry <b>${s.lastEntry ? dateTimeFmt(s.lastEntry, ctx.user.timezone) : 'none yet'}</b></span></div></div>` : ''}
 <nav class="tabs">${tabs.map(([k, l]) => html`<a href="${base}?tab=${k}" class="${tab === k ? 'on' : ''}">${l}</a>`)}</nav>
@@ -280,6 +289,8 @@ ${pastPrograms(ctx, p)}</section>
   r.post('/participants/:id/invite', async (ctx) => {
     const p = participantFor(ctx, ctx.params.id);
     const { link, emailed } = await sendInvite(ctx, p, { reset: !!p.password_hash });
+    const next = ctx.back(null);
+    if (emailed && next) { ctx.setFlash(`${p.password_hash ? 'New sign-in link' : 'Invite'} sent again to ${p.email}.`); return ctx.redirect(next); }
     ctx.html(layout(ctx, { title: 'Sign-in link', nav: 'people', body: html`<div class="page-head"><div><p class="eyebrow"><a href="/participants/${p.id}">${p.name}</a></p><h1>New sign-in link</h1></div></div>
 <section class="panel invite-done"><p>${emailed ? html`We emailed it to <b>${p.email}</b>. You can also send it yourself:` : html`Email isn’t set up on this site, so send them this link yourself:`}</p>
 <div class="copy"><input readonly value="${link}" data-copy><button type="button" class="btn" data-copybtn>Copy link</button></div>

@@ -60,7 +60,15 @@ test('the whole program flow', async (t) => {
   const today = P.todayIn('America/Los_Angeles');
   const inv = await coach.post('/participants/new', { name: 'Pat Test', email: 'pat@x.test', start_date: P.addDays(today, -2), timezone: 'America/Los_Angeles' });
   assert.equal(inv.status, 200);
-  const link = /value="(https?:\/\/[^"]+\/invite\/[^"]+)"/.exec(inv.text)[1];
+  const firstLink = /value="(https?:\/\/[^"]+\/invite\/[^"]+)"/.exec(inv.text)[1];
+  // They haven't responded: the list shows a Resend button, and resending replaces the link
+  const pid0 = db.get("SELECT id FROM users WHERE email='pat@x.test'").id;
+  assert.match((await coach.get('/participants')).text, new RegExp(`/participants/${pid0}/invite`));
+  const again = await coach.post(`/participants/${pid0}/invite`, { next: '/participants' });
+  assert.equal(again.status, 200, 'without email set up, the new link is shown to copy');
+  const link = /value="(https?:\/\/[^"]+\/invite\/[^"]+)"/.exec(again.text)[1];
+  assert.notEqual(link, firstLink);
+  assert.equal((await client(base).get(new URL(firstLink).pathname)).status, 410, 'the old link stops working');
   assert.ok(mail.sentLog.some((m) => m.to === 'pat@x.test'), 'an invite email was attempted');
 
   // Participant opens the link, chooses a password, lands on the phone app
