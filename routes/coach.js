@@ -6,7 +6,7 @@ const { HttpError } = require('../lib/http');
 const F = require('../lib/forms');
 const P = require('../lib/program');
 const R = require('../lib/report');
-const { participantFor, sendInvite, str, validEmail, ZONES } = require('../lib/site');
+const { participantFor, sendInvite, currentLink, baseUrl, str, validEmail, ZONES } = require('../lib/site');
 
 const O = { coach: true };
 
@@ -68,15 +68,16 @@ module.exports = (r, { db }) => {
     const all = rows.map((p) => summary(db, p));
     const inShow = (s) => show === 'all' || (show === 'active' ? s.pos && s.pos.started && !s.pos.finished : show === 'upcoming' ? !s.pos || !s.pos.started : s.pos && s.pos.finished);
     const list = all.filter(inShow).filter((s) => !q || s.p.name.toLowerCase().includes(q) || s.p.email.toLowerCase().includes(q));
-    const active = all.filter((s) => s.pos && s.pos.started && !s.pos.finished);
+    const real = all.filter((s) => !s.p.is_test);
+    const active = real.filter((s) => s.pos && s.pos.started && !s.pos.finished);
     const loggedToday = active.filter((s) => s.map[s.pos.day]).length;
     const idle = active.filter((s) => s.idle);
-    const reviews = all.filter((s) => s.pos && (s.pos.day === 7 || s.pos.day === 8 || s.pos.day >= 14) && s.report && s.report[s.pos.day >= 14 ? 'w2' : 'w1'].hasReview);
+    const reviews = real.filter((s) => s.pos && (s.pos.day === 7 || s.pos.day === 8 || s.pos.day >= 14) && s.report && s.report[s.pos.day >= 14 ? 'w2' : 'w1'].hasReview);
     const counts = { active: active.length, upcoming: all.filter((s) => !s.pos || !s.pos.started).length, finished: all.filter((s) => s.pos && s.pos.finished).length, all: all.length };
     const qs = (o) => '?' + new URLSearchParams({ ...(head && ctx.query.coach ? { coach: ctx.query.coach } : {}), show, ...(q ? { q } : {}), ...o }).toString();
 
     ctx.html(layout(ctx, { title: 'Participants', nav: 'people', body: html`
-<div class="page-head"><div><p class="eyebrow">${head ? 'All coaches' : 'Your clients'}</p><h1>Participants</h1></div><a class="btn primary" href="/participants/new">${icon('plus')} Invite a participant</a></div>
+<div class="page-head"><div><p class="eyebrow">${head ? 'All coaches' : 'Your clients'}</p><h1>Participants</h1></div><div class="head-actions"><form method="post" action="/participants/test">${csrfField(ctx)}<button class="btn ghost" title="A pretend participant for trying the program yourself">${icon('phone')} Try it as a participant</button></form><a class="btn primary" href="/participants/new">${icon('plus')} Invite a participant</a></div></div>
 <section class="kpis">
 <div class="kpi"><b>${active.length}</b><span>In a program now</span></div>
 <div class="kpi"><b>${loggedToday}<small>/${active.length}</small></b><span>Logged something today</span></div>
@@ -88,7 +89,7 @@ module.exports = (r, { db }) => {
 ${list.length ? html`<table class="list"><thead><tr><th>Participant</th>${head ? html`<th>Coach</th>` : ''}<th>Program</th><th>Today</th><th>Days complete</th><th>Top challenges</th><th>Last entry</th></tr></thead><tbody>
 ${list.map((s) => {
     const w = s.report ? s.report[s.week === 2 ? 'w2' : 'w1'] : null;
-    return html`<tr class="${s.idle ? 'idle' : ''}" data-href="/participants/${s.p.id}"><td><a href="/participants/${s.p.id}"><b>${s.p.name}</b></a><small>${s.p.email}</small>${inviteNote(ctx, s.p, ctx.url.pathname + ctx.url.search)}</td>
+    return html`<tr class="${s.idle ? 'idle' : ''}" data-href="/participants/${s.p.id}"><td><a href="/participants/${s.p.id}"><b>${s.p.name}</b></a>${s.p.is_test ? html` <span class="pill test">Test</span>` : html`<small>${s.p.email}</small>${inviteNote(ctx, s.p, ctx.url.pathname + ctx.url.search)}`}</td>
 ${head ? html`<td>${s.p.coach_name || '—'}</td>` : ''}
 <td>${stateLabel(s)}</td><td>${todayMarks(s)}</td>
 <td>${s.pos && s.pos.started ? html`<span class="meter"><span style="width:${s.completion.pct}%"></span></span> ${s.completion.done}/${s.completion.of}` : '—'}</td>
@@ -155,7 +156,7 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
     const base = `/participants/${p.id}`;
     let body;
     if (!s.e) body = html`<div class="empty"><p>No program yet.</p></div>`;
-    else if (tab === 'overview') body = overview(ctx, s);
+    else if (tab === 'overview') body = html`${p.is_test ? require('./testing').panel(ctx, s) : ''}${overview(ctx, s)}`;
     else if (tab === 'day') body = dayTab(ctx, s);
     else if (tab === 'week1' || tab === 'week2') body = s.report ? R.weekReport(s.report, tab === 'week1' ? 1 : 2, { who: firstName(p.name), coach: true }) : html`<div class="empty"><p>The program hasn’t started yet.</p></div>`;
     else if (tab === 'notes') body = notesTab(ctx, p);
@@ -164,7 +165,7 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
 
     ctx.html(layout(ctx, { title: p.name, nav: 'people', body: html`
 <div class="page-head person"><div><p class="eyebrow"><a href="/participants">Participants</a></p><h1>${p.name}</h1>
-<p class="muted">${p.email}${p.phone ? html` · <a href="tel:${p.phone}">${p.phone}</a>` : ''}${coach ? html` · Coach: ${coach.name}` : ''}</p>${inviteNote(ctx, p, `/participants/${p.id}`)}</div>
+<p class="muted">${p.is_test ? html`<span class="pill test">Test participant</span> ` : p.email}${p.phone ? html` · <a href="tel:${p.phone}">${p.phone}</a>` : ''}${coach ? html` · Coach: ${coach.name}` : ''}</p>${p.is_test ? '' : inviteNote(ctx, p, `/participants/${p.id}`)}</div>
 <div class="head-state">${stateLabel(s)}${s.e ? html`<small>${dateFmt(s.e.start_date)} – ${dateFmt(s.pos.endDate)}</small>` : ''}
 ${s.e && !s.pos.started ? html`<form method="post" action="/participants/${p.id}/start-today">${csrfField(ctx)}<button class="btn small primary">Start today</button></form>` : ''}</div></div>
 ${s.e ? html`<div class="person-strip">${dayStrip(s.map, s.pos, { link: (d) => `${base}?tab=day&day=${d}` })}<div class="person-stats"><span><b>${s.completion.done}</b>/${s.completion.of} days complete</span><span><b>${P.streak(s.map, s.pos)}</b> day streak</span><span>Last entry <b>${s.lastEntry ? dateTimeFmt(s.lastEntry, ctx.user.timezone) : 'none yet'}</b></span></div></div>` : ''}
@@ -226,14 +227,25 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
 ${s.e ? html`<label class="fld"><span>Day 1 of this program</span><input type="date" name="start_date" value="${s.e.start_date}"></label>` : ''}
 <div class="span2"><button class="btn primary">Save</button></div></form>
 <div>
-<section class="panel"><h3>Sign-in link</h3><p class="muted">Send a new link if they lost the invite or forgot their password. Any older link stops working.</p>
-<form method="post" action="/participants/${p.id}/invite">${csrfField(ctx)}<button class="btn">Send a new sign-in link</button></form></section>
-<section class="panel"><h3>Start another 14 days</h3><p class="muted">Starts a fresh program. The earlier one is kept on record.</p>
+${linkPanel(ctx, p)}
+<section class="panel"><h3>Start another 14 days</h3><p class="muted">Starts a fresh program on the date you pick (today works) and sends them a new sign-in link. The earlier program is kept on record.</p>
 <form method="post" action="/participants/${p.id}/restart" class="inline">${csrfField(ctx)}<input type="date" name="start_date" value="${P.todayIn(p.timezone)}" required> <button class="btn" data-confirm="Start a new 14-day program for ${p.name}?">Start new program</button></form>
 ${pastPrograms(ctx, p)}</section>
 <section class="panel danger"><h3>Remove</h3><p class="muted">They can’t sign in any more and disappear from your list. Their answers are kept.</p>
 <form method="post" action="/participants/${p.id}/deactivate">${csrfField(ctx)}<button class="btn danger" data-confirm="Remove ${p.name}? They won’t be able to sign in.">Remove participant</button></form></section>
 </div></div>`;
+  }
+
+  function linkPanel(ctx, p) {
+    const link = currentLink(ctx, p);
+    const until = p.invite_expires ? dateFmt(p.invite_expires.slice(0, 10)) : '';
+    return html`<section class="panel"><h3>Sign-in link</h3>
+${link ? html`<p class="muted">${p.password_hash ? 'This link signs them straight in.' : 'They haven’t used it yet. It lets them choose a password and opens their program.'} It works once, until ${until}.</p>
+<div class="copy"><input readonly value="${link}" data-copy><button type="button" class="btn" data-copybtn>Copy link</button></div>`
+    : p.password_hash ? html`<p class="muted">They’ve set a password and sign in at <b>${baseUrl(ctx)}/login</b> with ${p.email}.</p>`
+      : html`<p class="muted">Their last link has expired.</p>`}
+<form method="post" action="/participants/${p.id}/invite">${csrfField(ctx)}<input type="hidden" name="next" value="/participants/${p.id}?tab=settings"><button class="btn">${link ? 'Make and send a new link' : 'Send a new sign-in link'}</button></form>
+<p class="hint">A new link replaces the old one.</p></section>`;
   }
 
   function pastPrograms(ctx, p) {
@@ -309,17 +321,21 @@ ${pastPrograms(ctx, p)}</section>
     ctx.redirect(`/participants/${p.id}`);
   }, O);
 
-  r.post('/participants/:id/restart', (ctx) => {
+  r.post('/participants/:id/restart', async (ctx) => {
     const p = participantFor(ctx, ctx.params.id);
     if (!P.isDate(ctx.body.start_date)) throw new HttpError(400, 'Choose the date of Day 1.');
     db.insert('enrollments', { user_id: p.id, start_date: ctx.body.start_date, created_at: new Date().toISOString() });
-    ctx.setFlash(`New program starts ${dateFmt(ctx.body.start_date, 'long')}.`);
-    ctx.redirect(`/participants/${p.id}`);
+    const { link, emailed } = await sendInvite(ctx, p, { programStart: ctx.body.start_date });
+    ctx.html(layout(ctx, { title: 'New program', nav: 'people', body: html`<div class="page-head"><div><p class="eyebrow"><a href="/participants/${p.id}">${p.name}</a></p><h1>New program set up</h1></div></div>
+<section class="panel invite-done"><p>Day 1 is <b>${dateFmt(ctx.body.start_date, 'long')}</b>. ${emailed ? html`We emailed ${firstName(p.name)} a new sign-in link. You can also send it yourself:` : html`Send ${firstName(p.name)} this new sign-in link:`}</p>
+<div class="copy"><input readonly value="${link}" data-copy><button type="button" class="btn" data-copybtn>Copy link</button></div>
+<p class="hint">It’s also kept under Settings on their page.</p>
+<p><a class="btn primary" href="/participants/${p.id}">Back to ${firstName(p.name)}</a></p></section>` }));
   }, O);
 
   r.post('/participants/:id/deactivate', (ctx) => {
     const p = participantFor(ctx, ctx.params.id);
-    db.run('UPDATE users SET active=0, invite_hash=NULL WHERE id=?', p.id);
+    db.run('UPDATE users SET active=0, invite_hash=NULL, invite_token=NULL WHERE id=?', p.id);
     db.run('DELETE FROM sessions WHERE user_id=?', p.id);
     ctx.setFlash(`${p.name} was removed.`);
     ctx.redirect('/participants');

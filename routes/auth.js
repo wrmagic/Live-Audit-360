@@ -20,8 +20,20 @@ ${error ? html`<p class="flash err" role="alert">${error}</p>` : ''}
 }
 
 function passwordPage(ctx, u, error) {
-  return bare('Choose a password', html`<h2>${u.password_hash ? 'Choose a new password' : `Welcome, ${u.name.split(' ')[0]}`}</h2>
-<p class="muted">${u.password_hash ? 'Pick a new password for' : 'Choose a password to sign in with'} <b>${u.email}</b>.</p>
+  // Someone who already has a password: the link signs them straight in (they can also pick a new password).
+  if (u.password_hash) {
+    return bare('Welcome back', html`<h2>Welcome back, ${u.name.split(' ')[0]}</h2>
+<p class="muted">This link signs you in as <b>${u.email}</b>.</p>
+${error ? html`<p class="flash err" role="alert">${error}</p>` : ''}
+<form method="post">${csrfField(ctx)}<input type="hidden" name="continue" value="1"><button class="btn primary wide">Continue</button></form>
+<details class="newpw"><summary>Forgot your password? Choose a new one</summary>
+<form method="post">${csrfField(ctx)}
+<label class="fld"><span>New password</span><input type="password" name="password" required minlength="8" autocomplete="new-password"></label>
+<label class="fld"><span>Type it again</span><input type="password" name="password2" required minlength="8" autocomplete="new-password"></label>
+<button class="btn wide">Save and continue</button></form></details>`);
+  }
+  return bare('Choose a password', html`<h2>Welcome, ${u.name.split(' ')[0]}</h2>
+<p class="muted">Choose a password to sign in with <b>${u.email}</b>.</p>
 ${error ? html`<p class="flash err" role="alert">${error}</p>` : ''}
 <form method="post">${csrfField(ctx)}
 <label class="fld"><span>Password</span><input type="password" name="password" required minlength="8" autocomplete="new-password" autofocus></label>
@@ -70,13 +82,20 @@ module.exports = (r, { db }) => {
   r.post('/invite/:token', (ctx) => {
     const u = auth.findInvite(db, ctx.params.token);
     if (!u) return ctx.redirect(`/invite/${encodeURIComponent(ctx.params.token)}`);
+    const signIn = () => {
+      db.run('DELETE FROM sessions WHERE user_id=?', u.id);
+      ctx.setCookie('sid', auth.createSession(db, u), { maxAge: 60 * 864e2 });
+      ctx.redirect(u.role === 'participant' ? '/m?welcome=1' : '/participants');
+    };
+    if (ctx.body.continue && u.password_hash) {
+      db.run('UPDATE users SET invite_hash=NULL, invite_token=NULL, invite_expires=NULL WHERE id=?', u.id);
+      return signIn();
+    }
     const pw = ctx.body.password || '';
     if (pw.length < 8) return ctx.html(passwordPage(ctx, u, 'Use at least 8 characters.'), 400);
     if (pw !== ctx.body.password2) return ctx.html(passwordPage(ctx, u, 'The two passwords don’t match.'), 400);
-    db.run('UPDATE users SET password_hash=?, invite_hash=NULL, invite_expires=NULL WHERE id=?', auth.hashPassword(pw), u.id);
-    db.run('DELETE FROM sessions WHERE user_id=?', u.id);
-    ctx.setCookie('sid', auth.createSession(db, u), { maxAge: 60 * 864e2 });
-    ctx.redirect(u.role === 'participant' ? '/m?welcome=1' : '/participants');
+    db.run('UPDATE users SET password_hash=?, invite_hash=NULL, invite_token=NULL, invite_expires=NULL WHERE id=?', auth.hashPassword(pw), u.id);
+    signIn();
   }, { public: true });
 
   // ---- forgotten password

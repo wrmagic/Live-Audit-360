@@ -60,7 +60,7 @@ ${list.map((c) => html`<tr><td><b>${c.name}</b>${c.role === 'head' ? html` <span
     if (!u) throw new HttpError(404, 'That coach wasn’t found.');
     db.tx(() => {
       db.run("UPDATE users SET coach_id=? WHERE coach_id=? AND role='participant'", ctx.user.id, u.id);
-      db.run('UPDATE users SET active=0, invite_hash=NULL WHERE id=?', u.id);
+      db.run('UPDATE users SET active=0, invite_hash=NULL, invite_token=NULL WHERE id=?', u.id);
       db.run('DELETE FROM sessions WHERE user_id=?', u.id);
     });
     ctx.setFlash(`${u.name} was removed. Their clients are now yours.`);

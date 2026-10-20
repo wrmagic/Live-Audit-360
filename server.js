@@ -7,7 +7,7 @@ const auth = require('./lib/auth');
 const { html } = require('./lib/html');
 const { head } = require('./lib/views');
 
-const ROUTES = ['auth', 'participant', 'photos', 'coach', 'coaches', 'videos'];
+const ROUTES = ['auth', 'participant', 'photos', 'testing', 'coach', 'coaches', 'videos'];
 
 function createApp({ dbFile = process.env.DATABASE_FILE || path.join(__dirname, 'data', 'la360.db') } = {}) {
   const db = open(dbFile);

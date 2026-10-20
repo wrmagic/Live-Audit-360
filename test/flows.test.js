@@ -200,3 +200,62 @@ test('demo data loads and every page renders', async (t) => {
   for (const p of ['/m', '/m/progress', '/m/videos', '/m/me', '/m/day/10', '/m/day/10/day1', '/m/day/7/week2', '/m/day/3/photos', '/m/report/1']) assert.equal((await derek.get(p)).status, 200, p);
   assert.match((await derek.get('/m/videos')).text, /Mark as watched/);
 });
+
+test('sign-in links in Settings, new programs, and the testing tools', async (t) => {
+  const { server, db, base } = await setup();
+  t.after(() => server.close());
+  const coach = client(base);
+  await coach.login('head@x.test');
+  const today = P.todayIn('America/Los_Angeles');
+
+  // Settings shows the link they haven't used yet
+  await coach.post('/participants/new', { name: 'Kim Real', email: 'kim@x.test', start_date: today, timezone: 'America/Los_Angeles' });
+  const kim = db.get("SELECT * FROM users WHERE email='kim@x.test'");
+  const settings = await coach.get(`/participants/${kim.id}?tab=settings`);
+  assert.match(settings.text, new RegExp(`/invite/${kim.invite_token}`));
+
+  // Once they've set a password, a new program sends a new link that signs them straight in
+  const k = client(base);
+  await k.post(`/invite/${kim.invite_token}`, { password: 'kimpassword', password2: 'kimpassword' });
+  assert.match((await coach.get(`/participants/${kim.id}?tab=settings`)).text, /They’ve set a password/);
+  const re = await coach.post(`/participants/${kim.id}/restart`, { start_date: today });
+  const newLink = /value="(https?:\/\/[^"]+\/invite\/[^"]+)"/.exec(re.text)[1];
+  assert.equal(db.all('SELECT * FROM enrollments WHERE user_id=?', kim.id).length, 2);
+  const k2 = client(base);
+  assert.match((await k2.get(new URL(newLink).pathname)).text, /Welcome back/);
+  assert.equal((await k2.post(new URL(newLink).pathname, { continue: '1' })).location, '/m?welcome=1');
+  assert.match((await k2.get('/m')).text, /Day 1/);
+
+  // Testing tools refuse real clients
+  assert.equal((await coach.post(`/participants/${kim.id}/jump`, { day: '9', fill: '1' })).status, 403);
+  assert.equal((await coach.post(`/participants/${kim.id}/preview`)).status, 403);
+
+  // Make a test participant, jump to Day 9 with sample answers
+  const mk = await coach.post('/participants/test');
+  const tid = Number(/\/participants\/(\d+)/.exec(mk.location)[1]);
+  assert.equal(db.get('SELECT is_test FROM users WHERE id=?', tid).is_test, 1);
+  assert.match((await coach.get('/participants')).text, /<b>1<\/b><span>In a program now/, 'only Kim counts; tests are left out of the numbers');
+  await coach.post(`/participants/${tid}/jump`, { day: '9', fill: '1' });
+  const te = P.currentEnrollment(db, tid);
+  assert.equal(P.position(te, 'America/Los_Angeles').day, 9);
+  const filled = db.get('SELECT COUNT(DISTINCT day) n FROM responses WHERE enrollment_id=?', te.id).n;
+  assert.equal(filled, 8, 'Days 1-8 filled, today left for you');
+  assert.ok(db.get("SELECT COUNT(*) n FROM responses WHERE enrollment_id=? AND day=7 AND form='week2'", te.id).n, 'the Day 7 review is filled too');
+  assert.match((await coach.get(`/participants/${tid}?tab=week1`)).text, /Top areas to work on/);
+
+  // Preview as them, then come back
+  const pv = await coach.post(`/participants/${tid}/preview`);
+  assert.equal(pv.location, '/m');
+  const phoneHome = await coach.get('/m');
+  assert.match(phoneHome.text, /Day 9/);
+  assert.match(phoneHome.text, /Back to coach view/);
+  assert.equal((await coach.get('/m/report/1')).status, 200);
+  const back = await coach.post('/preview/exit');
+  assert.equal(back.location, `/participants/${tid}`);
+  assert.equal((await coach.get('/participants')).status, 200, 'signed back in as the coach');
+
+  // Clear and restart
+  await coach.post(`/participants/${tid}/clear`);
+  assert.equal(db.get('SELECT COUNT(*) n FROM responses WHERE enrollment_id=?', te.id).n, 0);
+  assert.equal(P.currentEnrollment(db, tid).start_date, today);
+});
