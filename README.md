@@ -14,7 +14,7 @@ It's built the same way as Event Master Plus: one Node.js program with **nothing
 | | Phone app (`/m`) | Coach site |
 |---|---|---|
 | **Participant** | Today's forms, past days to catch up, food photos, progress and streak, Day 7 / Day 14 analysis, videos (from Day 8), settings | — |
-| **Coach** | — | Their own clients: list with today's progress and who's gone quiet, invite people, every answer by day, photos, both analyses, focus areas, private notes |
+| **Coach** | — | Their own clients: list with today's progress and who's gone quiet, invite people, every answer by day, photos, both analyses, Week 2 priorities, private notes |
 | **Head coach** | — | Everyone, plus the **Coaches** page (add, resend links, remove) and editing the **Video library** |
 
 ## Week 2 priorities (Hybrid Priority Recommendation System)
@@ -92,7 +92,7 @@ Every push to the repository redeploys automatically. Forgot the head coach pass
 1. **Coaches page:** add your coaches. Each one gets a link to choose a password.
 2. **Week 2 content:** add videos, prompts and tools. Each item is for a whole area or one specific challenge, and can unlock on a set day (8–14). Unlisted YouTube or Vimeo links play inside the app.
 3. **Invite a participant:** enter their name, email and the date of Day 1. They get a link, choose a password, and the app walks them through each day. Tell them to add it to their home screen. The app shows how on iPhone and Android.
-4. **Watch progress:** the Participants list shows who logged today, who's been quiet for 2+ days, and whose analysis is ready. From someone's page you can read every day's answers, look at their photos, change their focus areas, keep notes, send a new sign-in link or start another 14 days.
+4. **Watch progress:** the Participants list shows who logged today, who's been quiet for 2+ days, and whose analysis is ready. From someone's page you can read every day's answers, look at their photos, see or adjust their Week 2 priorities, keep notes, send a new sign-in link or start another 14 days.
 
 ## Phone app and app stores
 
