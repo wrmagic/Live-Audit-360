@@ -82,6 +82,11 @@ function seed(db, headId) {
     }
     // Pretend the entries were saved on their own days
     db.run("UPDATE responses SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+' || (day - 1) || ' days', '+20 hours') WHERE enrollment_id=? AND day < ?", start, eid, p.day);
+    // Past Day 8: they've confirmed the recommended Week 2 priorities
+    if (p.day >= 9) {
+      const rk = require('../lib/report').build(db, db.get('SELECT * FROM enrollments WHERE id=?', eid)).pri.ranking;
+      if (rk.complete) require('../lib/priorities').confirm(db, eid, rk, rk.recommended, { id: uid, role: 'participant' });
+    }
     logins.push({ role: 'participant', email: p.email, note: p.day === 0 ? 'starts in 2 days' : p.day > 14 ? 'finished' : `on Day ${p.day}` });
   });
   const vids = [
@@ -97,6 +102,16 @@ function seed(db, headId) {
     ['relationships', 'Protecting your time with people who matter', 'Simple boundaries that help.', 12],
   ];
   vids.forEach(([area, title, description, day], i) => db.insert('videos', { area, title, description, day, url: 'https://example.com/sample-video', sort: i, created_at: now() }));
+  // Challenge-level prompts and tools: only shown to people who rated that challenge 3 or higher
+  const items = [
+    ['prompt', 'sleep.ratings.inconsistent', 'Pick one wake-up time', 'Choose a wake-up time you can keep all 7 days, weekends included. Set it now, and write it here: ________', null],
+    ['tool', 'sleep.ratings.crashes', 'Afternoon energy check', 'At 2 PM each day, note your energy (1–5) and what you ate at lunch. Look for the pattern by Day 14.', null],
+    ['prompt', 'phone.ratings.scrolling', 'Name your scroll trigger', 'Before you open social media today, ask: what am I avoiding or waiting for? Write down the answer three times this week.', null],
+    ['tool', 'phone.ratings.phone_time', 'Screen-time limit setup', 'Set a daily limit on your two most-used apps. iPhone: Settings → Screen Time → App Limits. Android: Settings → Digital Wellbeing.', 9],
+    ['prompt', 'mental.ratings.overthinking', 'The 10-minute worry window', 'Pick a 10-minute window each evening to write down what’s on your mind. Outside that window, note the worry and save it for later.', null],
+    ['prompt', 'nutrition.ratings.water', 'Water with every meal', 'Drink one full glass of water before each meal this week. Tick it off in your daily log.', null],
+  ];
+  items.forEach(([kind, challenge, title, description, day], i) => db.insert('videos', { kind, challenge, area: challenge.split('.')[0], title, description, day, url: '', sort: 20 + i, created_at: now() }));
   return logins;
 }
 

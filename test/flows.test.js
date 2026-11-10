@@ -161,10 +161,6 @@ test('scoring: week analysis, focus areas and comparison', () => {
   assert.equal(w1.facts.sleepHours, '6 – 7 hrs');
   assert.equal(w1.facts.bedtime, '23:56', 'bedtimes either side of midnight average sensibly');
 
-  // Focus: the participant's priority first, then the top scores
-  const focus = S.focusAreas({}, w1);
-  assert.deepEqual(focus.keys.slice(0, 2), ['phone', 'physical']);
-  assert.equal(S.focusAreas({ focus_areas: '["work"]' }, w1).source, 'coach');
 
   // Week 2 easier → negative change
   for (let d = 8; d <= 14; d++) answers[d] = { day1: { 'movement.challenge': 2 } };
@@ -241,7 +237,7 @@ test('sign-in links in Settings, new programs, and the testing tools', async (t)
   const filled = db.get('SELECT COUNT(DISTINCT day) n FROM responses WHERE enrollment_id=?', te.id).n;
   assert.equal(filled, 8, 'Days 1-8 filled, today left for you');
   assert.ok(db.get("SELECT COUNT(*) n FROM responses WHERE enrollment_id=? AND day=7 AND form='week2'", te.id).n, 'the Day 7 review is filled too');
-  assert.match((await coach.get(`/participants/${tid}?tab=week1`)).text, /Top areas to work on/);
+  assert.match((await coach.get(`/participants/${tid}?tab=week1`)).text, /Week 2 priorities/);
 
   // Preview as them, then come back
   const pv = await coach.post(`/participants/${tid}/preview`);
@@ -258,4 +254,133 @@ test('sign-in links in Settings, new programs, and the testing tools', async (t)
   await coach.post(`/participants/${tid}/clear`);
   assert.equal(db.get('SELECT COUNT(*) n FROM responses WHERE enrollment_id=?', te.id).n, 0);
   assert.equal(P.currentEnrollment(db, tid).start_date, today);
+});
+
+
+// ---------------------------------------------------------------- Hybrid priority spec (Oct 28 2026)
+const Pr = require('../lib/priorities');
+
+/** A full End of Week Review: every question rated `base`, with some overrides. */
+function review(base, overrides = {}, stated = []) {
+  const week1 = {}; const week2 = {};
+  for (const q of Pr.QUESTIONS) {
+    const v = overrides[q.key] ?? base;
+    (F.FORMS.week1.sections.some((sec) => sec.area === q.area) ? week1 : week2)[q.key] = v;
+  }
+  if (stated.length) week2['wrapup.priorities'] = stated;
+  return { week1, week2 };
+}
+
+test('spec: eligibility, ranking order and the worked example', () => {
+  // Page 2 example: Sleep 5, Mental 5, Phone 4, Nutrition 3, Physical 2 (everything else 1-2)
+  const rk = Pr.rank(review(1, {
+    'sleep.ratings.quality': 5, 'sleep.ratings.hours': 4,             // sleep: highest 5, two rated 3-5
+    'mental.ratings.stress': 5,                                       // mental: highest 5, one rated 3-5
+    'phone.ratings.scrolling': 4, 'nutrition.ratings.water': 3,
+    'physical.ratings.energy': 2,
+  }));
+  assert.ok(rk.complete);
+  assert.deepEqual(rk.eligibleKeys, ['sleep', 'mental', 'phone', 'nutrition'], 'highest rating first, then count of 3-5');
+  assert.deepEqual(rk.recommended, ['sleep', 'mental', 'phone']);
+  const cat = Object.fromEntries(rk.categories.map((c) => [c.key, c]));
+  assert.equal(cat.physical.eligible, false, 'a 2 is recorded but never triggers support');
+  assert.equal(cat.physical.highest, 2);
+  assert.deepEqual(cat.sleep.challenges.map((c) => c.key), ['sleep.ratings.quality', 'sleep.ratings.hours']);
+  assert.equal(rk.items.find((i) => i.key === 'physical.ratings.energy').eligible, false);
+
+  // Ties on highest and count are broken by the participant's stated priorities
+  const tie = Pr.rank(review(1, { 'work.ratings.time': 4, 'discipline.ratings.goals': 4 }, ['Discipline & habits']));
+  assert.deepEqual(tie.recommended, ['discipline', 'work']);
+  const tie2 = Pr.rank(review(1, { 'work.ratings.time': 4, 'discipline.ratings.goals': 4 }, ['Work, time & productivity']));
+  assert.deepEqual(tie2.recommended, ['work', 'discipline']);
+});
+
+test('spec: never manufacture a third priority', () => {
+  const two = Pr.rank(review(2, { 'sleep.ratings.quality': 3, 'phone.ratings.mood': 4 }));
+  assert.deepEqual(two.recommended, ['phone', 'sleep']);
+  assert.equal(Pr.required(two), 2);
+  const none = Pr.rank(review(2));
+  assert.deepEqual(none.recommended, []);
+  assert.equal(Pr.required(none), 0);
+  assert.deepEqual(Pr.validate(none, []), { keys: [] });
+  const partial = Pr.rank({ week1: { 'sleep.ratings.quality': 5 } });
+  assert.equal(partial.complete, false, 'every question must be rated first');
+});
+
+test('spec: confirm or swap rules', () => {
+  const rk = Pr.rank(review(1, { 'sleep.ratings.quality': 5, 'mental.ratings.stress': 5, 'phone.ratings.scrolling': 4, 'nutrition.ratings.water': 3 }));
+  assert.deepEqual(Pr.validate(rk, ['sleep', 'mental', 'nutrition']), { keys: ['sleep', 'mental', 'nutrition'] }, 'swap in another eligible area');
+  assert.match(Pr.validate(rk, ['sleep', 'mental', 'physical']).error, /rated 3 or higher/);
+  assert.match(Pr.validate(rk, ['sleep', 'sleep', 'mental']).error, /once/);
+  assert.match(Pr.validate(rk, ['sleep', 'mental', 'phone', 'nutrition']).error, /no more than 3/);
+  assert.match(Pr.validate(rk, ['sleep']).error, /Pick 3/);
+});
+
+test('spec: the participant flow, storage, lock and challenge-level content', async (t) => {
+  const { server, db, base } = await setup();
+  t.after(() => server.close());
+  const coach = client(base);
+  await coach.login('head@x.test');
+  const today = P.todayIn('America/Los_Angeles');
+  await coach.post('/participants/new', { name: 'Robin Spec', email: 'robin@x.test', start_date: P.addDays(today, -6), timezone: 'America/Los_Angeles' });
+  const u = db.get("SELECT * FROM users WHERE email='robin@x.test'");
+  const e = P.currentEnrollment(db, u.id);
+  const me = client(base);
+  await me.post(`/invite/${u.invite_token}`, { password: 'robinpassword', password2: 'robinpassword' });
+
+  // Content: a whole-area video, a challenge item for a challenge they flag, and one for a challenge rated 2
+  const now = new Date().toISOString();
+  const vArea = db.insert('videos', { kind: 'video', area: 'sleep', title: 'Sleep basics', url: 'https://youtu.be/abcdefgh', created_at: now });
+  const vHit = db.insert('videos', { kind: 'prompt', area: 'sleep', challenge: 'sleep.ratings.quality', title: 'Quality prompt', url: '', description: 'Do this', created_at: now });
+  const vMiss = db.insert('videos', { kind: 'tool', area: 'sleep', challenge: 'sleep.ratings.hours', title: 'Hours tool', url: '', description: 'x', created_at: now });
+  const vOther = db.insert('videos', { kind: 'video', area: 'work', title: 'Not a priority', url: 'https://youtu.be/zzzzzzzz', created_at: now });
+
+  // Day 7: the review is unfinished, so no recommendations yet
+  assert.match((await me.get('/m/priorities')).text, /Finish your review first/);
+  const r = review(1, { 'sleep.ratings.quality': 5, 'sleep.ratings.hours': 2, 'mental.ratings.stress': 5, 'phone.ratings.scrolling': 4, 'nutrition.ratings.water': 3 });
+  P.saveAnswers(db, e.id, 7, 'week1', r.week1);
+  P.saveAnswers(db, e.id, 7, 'week2', r.week2);
+  const pg = await me.get('/m/priorities');
+  assert.match(pg.text, /Choose your Week 2 priorities/);
+  assert.match(pg.text, /Other areas you can swap in/);
+  assert.match(pg.text, /No support needed/);
+
+  // Bad picks are refused; swapping phone for nutrition is allowed
+  assert.match((await me.post('/m/priorities', { 'areas[]': ['sleep', 'physical', 'mental'] })).location, /err=/);
+  await me.post('/m/priorities', { 'areas[]': ['sleep', 'mental', 'nutrition'] });
+  const saved = Pr.load(db, e.id);
+  assert.deepEqual(saved.recommended, ['mental', 'sleep', 'phone'], 'original recommendation kept (mental and sleep tie on 5 with one challenge each; category order decides)');
+  assert.deepEqual(saved.confirmed, ['sleep', 'mental', 'nutrition'], 'final choice stored separately');
+  assert.equal(saved.confirmed_role, 'participant');
+  assert.equal(saved.ranking.items.length, Pr.QUESTIONS.length, 'every question’s rating, category and eligibility is stored');
+  assert.ok(saved.ranking.items.every((i) => i.area && typeof i.eligible === 'boolean'));
+
+  // The review is now locked; can reopen on Day 7 only
+  assert.equal((await me.post('/m/day/7/week1', r.week1, { 'x-autosave': '1' })).status, 403);
+  assert.match((await me.get('/m/day/7/week1')).text, /review is locked/);
+  await me.post('/m/priorities/reopen');
+  assert.equal(Pr.load(db, e.id), null);
+  await me.post('/m/priorities', { 'areas[]': ['sleep', 'mental', 'nutrition'] });
+
+  // Day 9: can't change any more; the plan shows only confirmed areas and flagged challenges
+  db.run('UPDATE enrollments SET start_date=? WHERE id=?', P.addDays(today, -8), e.id);
+  assert.equal((await me.post('/m/priorities/reopen')).status, 403);
+  const plan = (await me.get('/m/videos')).text;
+  assert.match(plan, /Sleep basics/);
+  assert.match(plan, /Quality prompt/);
+  assert.doesNotMatch(plan, /Hours tool/, 'challenge rated 2 gets no content');
+  assert.doesNotMatch(plan, /Not a priority/, 'only confirmed categories drive Week 2');
+  assert.equal((plan.match(/Sleep basics/g) || []).length, 1, 'no duplicates');
+  void vArea; void vHit; void vMiss; void vOther;
+
+  // The coach sees the spec table and can adjust under the same rules
+  const ov = (await coach.get(`/participants/${u.id}`)).text;
+  assert.match(ov, /Recommended, swapped out/);
+  assert.match(ov, /Priority 3 \(swapped in\)/);
+  assert.match(ov, /No intervention/);
+  await coach.post(`/participants/${u.id}/priorities`, { 'areas[]': ['sleep', 'mental', 'phone'] });
+  const after = Pr.load(db, e.id);
+  assert.deepEqual(after.confirmed, ['sleep', 'mental', 'phone']);
+  assert.deepEqual(after.recommended, ['mental', 'sleep', 'phone'], 'the system’s recommendation is still kept');
+  assert.equal(after.confirmed_role, 'head');
 });

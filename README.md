@@ -3,8 +3,8 @@
 A 14-day life audit program. Participants log their days on their phone; coaches see everyone's answers, photos and analysis on a desktop dashboard.
 
 - **Days 1–7, Document, don't change.** Each day the participant fills in **Daily Audit Part 1** (check-in, movement, nutrition, hydration) and **Part 2** (phone, habits, sleep, environment, daily reflection), and photographs what they eat and drink. On Day 7 they also fill in the **End of Week Review** (Parts 1 and 2).
-- **Day 7 analysis.** A score for each of the eight life areas, the top three challenges, a typical-day summary and their strengths and priorities.
-- **Days 8–14, Make the change.** The app picks three **focus areas** (the participant's priorities from the review, filled in from the top scores, or the coach's choice) and shows the coaching videos for those areas. They keep logging the same way.
+- **Day 7 analysis and priorities.** Anything rated 3 or higher on the review is eligible for support. The app recommends up to three areas, and the participant confirms them or swaps in another eligible area. See *Week 2 priorities* below.
+- **Days 8–14, Make the change.** Videos, prompts and tools for the confirmed priorities, down to the specific challenges they flagged. They keep logging the same way.
 - **Day 14 analysis.** The same report again, with Week 1 and Week 2 side by side.
 
 It's built the same way as Event Master Plus: one Node.js program with **nothing to install**, its database in a single file, server-rendered pages, a phone app that installs to the home screen, and one-click deploy to Render from this GitHub repository.
@@ -17,14 +17,28 @@ It's built the same way as Event Master Plus: one Node.js program with **nothing
 | **Coach** | — | Their own clients: list with today's progress and who's gone quiet, invite people, every answer by day, photos, both analyses, focus areas, private notes |
 | **Head coach** | — | Everyone, plus the **Coaches** page (add, resend links, remove) and editing the **Video library** |
 
-## The scoring
+## Week 2 priorities (Hybrid Priority Recommendation System)
 
-Every area is scored 1–5, where 1 = not a challenge and 5 = severe, just like the forms. Each area's score is the average of two parts:
+This follows the developer spec dated Oct 28, 2026. The code is in `lib/priorities.js`.
 
-- **Daily:** that area's "How much of a challenge…" rating from each day, plus related 1–5 ratings flipped where 5 is good. For example, Sleep also uses sleep quality and how rested they felt, and Nutrition also uses the hydration rating. The Mental health part comes from the morning, midday and evening check-in plus "how would you describe your day". Work & productivity has no daily section of its own, so it uses "How satisfied were you with the way you spent your day".
-- **Review:** the average of that area's rows on the End of Week Review.
+1. **Rating:** every End of Week Review question gets a rating from 1 to 5. A rating of **3, 4 or 5 makes that challenge eligible** for support. Ratings of 1 and 2 are recorded but never trigger anything.
+2. **Ranking:** questions are grouped into the eight areas. Eligible areas are ranked by:
+   - their **highest single rating** first
+   - then **how many questions were rated 3–5**
+   - then the participant's **stated priorities** (the "top three priorities" question on the review)
+   - and, if still tied, the area's daily challenge average, then a fixed area order
+3. **Recommendation:** the app recommends **up to three** areas. If only one or two qualify, only those are recommended. If none qualify, there's no corrective plan.
+4. **Confirm or swap:** on Day 7, once every review question is rated, the participant confirms the recommendation or swaps an area for another eligible one. The rules: no duplicates, no more than three, and only areas rated 3 or higher. The same priorities stay in place for all of Days 8–14. They can change them until Day 8 starts, and the Day 7 review locks once they confirm. A coach can adjust them under the same rules.
+5. **What's stored:**
+   - every question's rating, area and eligibility
+   - the area ranking
+   - the **original recommendations**
+   - the **final confirmed choice**, with who confirmed it and when
 
-The coach view shows the breakdown table. All of this is in `lib/scoring.js`.
+   The recommendations are kept separately from the final choice, so the two can be compared later.
+6. **Week 2 content:** the coach's **Week 2 content** library holds videos, prompts and tools. Each item is either for a whole area or for **one specific challenge**. A participant sees the items for their confirmed areas: whole-area items, plus items for the challenges *they* rated 3 or higher. Nothing is listed twice. The library shows which challenges still have no content of their own, so the challenge-to-resource map can be filled in over time.
+
+The area bars in the reports still blend the daily ratings with the review, as an overall picture. Only the review ratings decide the priorities.
 
 ## Changing the questions
 
@@ -76,7 +90,7 @@ Every push to the repository redeploys automatically. Forgot the head coach pass
 ## Using it
 
 1. **Coaches page:** add your coaches. Each one gets a link to choose a password.
-2. **Videos:** add your coaching videos. Each video gets a life area and, optionally, the day it unlocks (8–14). Unlisted YouTube or Vimeo links play inside the app.
+2. **Week 2 content:** add videos, prompts and tools. Each item is for a whole area or one specific challenge, and can unlock on a set day (8–14). Unlisted YouTube or Vimeo links play inside the app.
 3. **Invite a participant:** enter their name, email and the date of Day 1. They get a link, choose a password, and the app walks them through each day. Tell them to add it to their home screen. The app shows how on iPhone and Android.
 4. **Watch progress:** the Participants list shows who logged today, who's been quiet for 2+ days, and whose analysis is ready. From someone's page you can read every day's answers, look at their photos, change their focus areas, keep notes, send a new sign-in link or start another 14 days.
 
@@ -89,12 +103,13 @@ Right now the participant app is a web app that installs to the home screen and 
 ```
 server.js            web server: sign-in, page access, form handling
 lib/forms.js         the four forms, the eight life areas, which forms go on which day
-lib/scoring.js       area scores, focus areas, Week 1 vs Week 2
+lib/priorities.js    Week 2 priorities: eligibility, ranking, recommend, confirm
+lib/scoring.js       area scores, Week 1 vs Week 2
 lib/report.js        the Day 7 / Day 14 analysis page
 lib/program.js       program days, progress, saving answers
 lib/views.js         page frames, icons, drawing the forms and answers
 routes/participant.js   phone app      routes/coach.js   coach site
-routes/photos.js     food photos       routes/videos.js  video library
+routes/photos.js     food photos       routes/videos.js  Week 2 content library
 routes/coaches.js    coaching team     routes/auth.js    sign-in, invite links
 public/              styles, scripts, icons, header images
 scripts/setup.js     first-start setup (and --demo sample data)

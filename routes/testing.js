@@ -13,6 +13,7 @@ const P = require('../lib/program');
 const auth = require('../lib/auth');
 const { participantFor, str } = require('../lib/site');
 const { fakeAnswers } = require('../scripts/demo');
+const Pr = require('../lib/priorities');
 
 const O = { coach: true };
 
@@ -30,10 +31,10 @@ function panel(ctx, s) {
 <p class="muted">Use this account to try the program yourself. It isn’t counted in your numbers, and these tools only work on test participants.</p>
 <div class="test-grid">
 <form method="post" action="/participants/${p.id}/preview">${csrfField(ctx)}<h4>1. See their phone app</h4><p class="hint">Opens the app as ${p.name}. Everything works: fill in forms, add photos, watch videos. A bar at the top brings you back here.</p><button class="btn primary">${icon('phone')} Preview their app</button></form>
-<form method="post" action="/participants/${p.id}/jump">${csrfField(ctx)}<h4>2. Jump to a day</h4><p class="hint">Moves their Day 1 so today becomes the day you pick.</p>
+<form method="post" action="/participants/${p.id}/jump">${csrfField(ctx)}<h4>2. Jump to a day</h4><p class="hint">Moves their Day 1 so today becomes the day you pick. Jump to Day 7 or 8 to choose the Week 2 priorities yourself; jumping to Day 9 or later confirms the recommended ones.</p>
 <div class="inline"><select name="day">${Array.from({ length: F.PROGRAM_DAYS }, (_, i) => i + 1).map((d) => html`<option value="${d}"${d === day ? raw(' selected') : ''}>Day ${d}${d === 7 ? ' · Week 1 review' : d === 8 ? ' · videos start' : d === 14 ? ' · final review' : ''}</option>`)}<option value="15"${day > F.PROGRAM_DAYS ? raw(' selected') : ''}>Finished</option></select><button class="btn">Jump</button></div>
 <label class="check"><input type="checkbox" name="fill" value="1" checked> Fill the days before it with sample answers</label></form>
-<form method="post" action="/participants/${p.id}/clear">${csrfField(ctx)}<h4>3. Start over</h4><p class="hint">Deletes every answer, photo and watched video in this program and sets Day 1 to today.</p><button class="btn ghost" data-confirm="Delete all of ${p.name}’s answers and start again from Day 1?">Clear and restart</button></form>
+<form method="post" action="/participants/${p.id}/clear">${csrfField(ctx)}<h4>3. Start over</h4><p class="hint">Deletes every answer, photo, priority and watched video in this program and sets Day 1 to today.</p><button class="btn ghost" data-confirm="Delete all of ${p.name}’s answers and start again from Day 1?">Clear and restart</button></form>
 </div></section>`;
 }
 
@@ -78,6 +79,12 @@ module.exports = (r, { db, photoDir }) => {
           }
         }
       }
+      // Priorities belong to Day 7: going back before it clears them; going past Day 8 confirms the recommendation
+      if (day <= Pr.REVIEW_DAY) Pr.reopen(db, e.id);
+      else if (day >= 9 && !Pr.load(db, e.id)) {
+        const rk = require('../lib/report').build(db, e).pri.ranking;
+        if (rk.complete) Pr.confirm(db, e.id, rk, rk.recommended, null);
+      }
     });
     ctx.setFlash(`${p.name} is now on ${day > F.PROGRAM_DAYS ? 'the finished program' : `Day ${day}`}.${filled ? ` Filled in ${filled} form${filled === 1 ? '' : 's'} with sample answers.` : ''}`);
     ctx.redirect(`/participants/${p.id}`);
@@ -89,7 +96,8 @@ module.exports = (r, { db, photoDir }) => {
     for (const ph of db.all('SELECT file FROM photos WHERE enrollment_id=?', e.id)) { try { fs.unlinkSync(path.join(photoDir, ph.file)); } catch { /* gone */ } }
     db.tx(() => {
       for (const t of ['responses', 'photos', 'video_views']) db.run(`DELETE FROM ${t} WHERE enrollment_id=?`, e.id);
-      db.run('UPDATE enrollments SET start_date=?, focus_areas=NULL WHERE id=?', P.todayIn(p.timezone), e.id);
+      db.run('DELETE FROM priorities WHERE enrollment_id=?', e.id);
+      db.run('UPDATE enrollments SET start_date=? WHERE id=?', P.todayIn(p.timezone), e.id);
     });
     ctx.setFlash(`Cleared. ${p.name} starts again at Day 1 today.`);
     ctx.redirect(`/participants/${p.id}`);

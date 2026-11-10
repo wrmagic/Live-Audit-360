@@ -404,3 +404,55 @@ body.phone .cmp-row { grid-template-columns: 124px 30px 14px 30px 1fr; }
 .preview-bar span { display: flex; align-items: center; gap: 6px; }
 .preview-bar .btn { background: #fff; border-color: #fff; color: var(--blue); }
 body.phone .preview-bar + .pmain .hero, body.has-hero .preview-bar ~ .pmain .hero { padding-top: 28px; }
+
+/* Week 2 priorities */
+.legend-card { background: #fff; border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 16px; margin-bottom: 14px; }
+.legend-card h3 { font-size: 15px; }
+.legend-card ol { list-style: none; margin: 0 0 6px; padding: 0; display: grid; gap: 6px; }
+.legend-card li { display: grid; grid-template-columns: 28px 96px 1fr; align-items: center; gap: 8px; font-size: 14px; }
+.legend-card small { color: var(--muted); }
+.dot.d1 { background: var(--l1); } .dot.d2 { background: var(--l2); } .dot.d3 { background: var(--l3); } .dot.d4 { background: var(--l4); } .dot.d5 { background: var(--l5); }
+.picks { display: grid; gap: 10px; }
+.pick { display: block; position: relative; cursor: pointer; }
+.pick input { position: absolute; opacity: 0; }
+.pick-body { display: block; background: #fff; border: 2px solid var(--line); border-radius: var(--radius); padding: 12px 14px 12px 48px; box-shadow: var(--shadow); position: relative; }
+.pick-body::before { content: ''; position: absolute; left: 14px; top: 14px; width: 22px; height: 22px; border-radius: 6px; border: 2px solid #b9c5e8; background: #fff; }
+.pick input:checked + .pick-body { border-color: var(--blue); background: #f5f8ff; }
+.pick input:checked + .pick-body::before { background: var(--blue) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3'%3E%3Cpath d='m5 12 4 4 10-10'/%3E%3C/svg%3E") center/16px no-repeat; border-color: var(--blue); }
+.pick input:focus-visible + .pick-body { box-shadow: 0 0 0 3px var(--blue-soft); }
+.pick.off { opacity: .5; cursor: not-allowed; }
+.pick-head { display: flex; align-items: center; gap: 8px; }
+.pick-head b { flex: 1; font: 600 17px var(--head); }
+.pick-head .i { color: var(--sun); }
+.pick small { display: block; color: var(--muted); margin-top: 4px; }
+.nopick { display: flex; flex-wrap: wrap; gap: 8px; }
+.nopick span { display: inline-flex; align-items: center; gap: 5px; background: var(--cream-2); border-radius: 999px; padding: 5px 12px; font-size: 13.5px; color: var(--muted); }
+.nopick .i { width: 16px; height: 16px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+.gap { margin-top: 18px; }
+.tasks.after { margin-top: 10px; }
+.pri-cta { border-color: var(--sun); }
+.plan { margin-bottom: 22px; }
+.plan-head { margin: 0 0 10px; border-radius: var(--radius); }
+.flagged { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 0 0 12px; }
+.flagged > span { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink-2); }
+.flagged .dot, .pritable .dot, .pick .dot, .legend-card .dot { width: 24px; height: 24px; font-size: 13px; }
+.prewrap { white-space: pre-line; }
+.table-wrap { overflow-x: auto; }
+.pritable { font-size: 14px; }
+.pritable th, .pritable td { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.pritable thead th { font-size: 12px; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.pritable tbody th { font-weight: 600; }
+.pritable tbody th .i { width: 17px; height: 17px; color: var(--sun); }
+.pritable tbody th small { display: block; font-weight: 400; color: var(--muted); margin-top: 2px; }
+.pritable tr.none th, .pritable tr.none td { color: var(--muted); }
+.status { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 12.5px; font-weight: 600; white-space: nowrap; background: var(--cream-2); }
+.status.pri { background: #ffe9d9; color: #a3410c; }
+.status.elig { background: #fff4d6; color: #7a5a06; }
+.status.out { background: #eef0f6; color: var(--ink-2); }
+.status.none { background: transparent; color: var(--muted); font-weight: 500; }
+.report-head .btn.ghost { color: #fff; border-color: #ffffff66; }
+.adjust { margin-top: 10px; }
+.adjust summary { cursor: pointer; color: var(--blue); font-weight: 600; margin-bottom: 8px; }
+.chip input:disabled + span { opacity: .4; }
+h3 .pill { font-family: var(--body); text-transform: none; letter-spacing: 0; margin-left: 6px; }

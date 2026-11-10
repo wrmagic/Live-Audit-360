@@ -6,6 +6,7 @@ const { HttpError } = require('../lib/http');
 const F = require('../lib/forms');
 const P = require('../lib/program');
 const R = require('../lib/report');
+const Pr = require('../lib/priorities');
 const { participantFor, sendInvite, currentLink, baseUrl, str, validEmail, ZONES } = require('../lib/site');
 
 const O = { coach: true };
@@ -86,14 +87,16 @@ module.exports = (r, { db }) => {
 </section>
 <div class="toolbar"><nav class="seg">${[['active', 'In program'], ['upcoming', 'Starting soon'], ['finished', 'Finished'], ['all', 'All']].map(([k, l]) => html`<a href="${qs({ show: k })}" class="${show === k ? 'on' : ''}">${l} <small>${counts[k]}</small></a>`)}</nav>
 <form class="filters">${head ? html`<select name="coach" data-autosubmit><option value="all">All coaches</option>${coachOptions(db, coachFilter)}</select>` : ''}<input type="hidden" name="show" value="${show}"><input type="search" name="q" value="${q}" placeholder="Search name or email"></form></div>
-${list.length ? html`<table class="list"><thead><tr><th>Participant</th>${head ? html`<th>Coach</th>` : ''}<th>Program</th><th>Today</th><th>Days complete</th><th>Top challenges</th><th>Last entry</th></tr></thead><tbody>
+${list.length ? html`<table class="list"><thead><tr><th>Participant</th>${head ? html`<th>Coach</th>` : ''}<th>Program</th><th>Today</th><th>Days complete</th><th>Challenges / priorities</th><th>Last entry</th></tr></thead><tbody>
 ${list.map((s) => {
     const w = s.report ? s.report[s.week === 2 ? 'w2' : 'w1'] : null;
     return html`<tr class="${s.idle ? 'idle' : ''}" data-href="/participants/${s.p.id}"><td><a href="/participants/${s.p.id}"><b>${s.p.name}</b></a>${s.p.is_test ? html` <span class="pill test">Test</span>` : html`<small>${s.p.email}</small>${inviteNote(ctx, s.p, ctx.url.pathname + ctx.url.search)}`}</td>
 ${head ? html`<td>${s.p.coach_name || '—'}</td>` : ''}
 <td>${stateLabel(s)}</td><td>${todayMarks(s)}</td>
 <td>${s.pos && s.pos.started ? html`<span class="meter"><span style="width:${s.completion.pct}%"></span></span> ${s.completion.done}/${s.completion.of}` : '—'}</td>
-<td>${w && w.top.length ? html`<span class="chips-s">${w.top.map((a) => html`<span class="badge ${require('../lib/views').levelClass(a.score)}" title="${a.label}: ${a.score}">${a.short} ${a.score}</span>`)}</span>` : html`<span class="muted">—</span>`}</td>
+<td>${s.report && s.report.pri.isConfirmed ? html`<span class="chips-s">${s.report.pri.confirmed.length ? s.report.pri.confirmed.map((k, i) => html`<span class="pill on" title="Priority ${i + 1}">${i + 1}. ${F.AREA[k].short}</span>`) : html`<span class="muted">No priorities</span>`}</span>`
+  : s.pos && s.pos.day >= 7 && s.report && s.report.pri.ranking.complete ? html`<span class="pill warn">Priorities not confirmed</span>`
+  : w && w.top.length ? html`<span class="chips-s">${w.top.map((a) => html`<span class="badge ${require('../lib/views').levelClass(a.score)}" title="${a.label}: ${a.score}">${a.short} ${a.score}</span>`)}</span>` : html`<span class="muted">—</span>`}</td>
 <td>${s.lastEntry ? dateTimeFmt(s.lastEntry, ctx.user.timezone) : html`<span class="muted">Nothing yet</span>`}${s.idle ? html` <span class="pill warn">Nudge</span>` : ''}</td></tr>`;
   })}</tbody></table>` : html`<div class="empty">${icon('people')}<p>${all.length ? 'No one matches.' : 'No participants yet.'}</p>${all.length ? '' : html`<a class="btn primary" href="/participants/new">Invite your first participant</a>`}</div>`}`,
     }));
@@ -178,19 +181,33 @@ ${s.e ? html`<div class="person-strip">${dayStrip(s.map, s.pos, { link: (d) => `
     if (!s.report) return html`<section class="panel"><h3>Program starts ${dateFmt(s.e.start_date, 'long')}</h3><p class="muted">Nothing to show until Day 1.</p></section>`;
     const w = s.week === 2 ? s.report.w2 : s.report.w1;
     const notes = db.all('SELECT n.*, u.name author FROM notes n JOIN users u ON u.id=n.author_id WHERE participant_id=? ORDER BY n.created_at DESC LIMIT 3', s.p.id);
-    const focus = s.report.focus;
-    return html`<div class="cols">
+    return html`${priorityPanel(ctx, s)}<div class="cols">
 <section class="panel"><h3>Week ${s.week} so far ${w.hasReview ? html`<span class="pill done">Review done</span>` : ''}</h3>
-<ul class="summary">${require('../lib/scoring').summary(w, firstName(s.p.name)).map((l) => html`<li>${l}</li>`)}</ul>
-${areaBars(w.areas, { compareTo: s.week === 2 ? s.report.w1.areas : null })}</section>
+<ul class="summary">${require('../lib/scoring').summary(w, firstName(s.p.name), s.week === 1 ? s.report.pri.ranking : s.report.rank2).map((l) => html`<li>${l}</li>`)}</ul>
+${areaBars(w.areas, { compareTo: s.week === 2 ? s.report.w1.areas : null })}<p class="hint">Bars blend the daily challenge ratings with the review. Week 2 priorities come only from the review ratings (table above).</p></section>
 <div>
-<section class="panel"><h3>${icon('target')} Focus areas for Days 8–14</h3>
-<form method="post" action="/participants/${s.p.id}/focus">${csrfField(ctx)}
-<div class="chips">${F.AREAS.map((a) => html`<label class="chip"><input type="checkbox" name="areas[]" value="${a.key}"${focus.keys.includes(a.key) ? raw(' checked') : ''}><span>${a.label}</span></label>`)}</div>
-<p class="hint">${focus.source === 'coach' ? 'You chose these.' : focus.source === 'scores' ? 'Picked automatically from the top scores.' : 'From the priorities they picked on the Day 7 review, filled in from the top scores.'} The videos they see on Days 8–14 come from these areas.</p>
-<button class="btn small">Save focus areas</button>${focus.source === 'coach' ? html` <button class="btn small ghost" name="reset" value="1">Go back to automatic</button>` : ''}</form></section>
 <section class="panel"><h3>${icon('notes')} Latest notes</h3>${notes.length ? notes.map((n) => html`<p class="note"><small>${dateTimeFmt(n.created_at, ctx.user.timezone)} · ${n.author}</small>${n.body}</p>`) : html`<p class="muted">No notes yet.</p>`}<a href="/participants/${s.p.id}?tab=notes">Add a note</a></section>
 </div></div>`;
+  }
+
+  function priorityPanel(ctx, s) {
+    const pri = s.report.pri;
+    const rk = pri.ranking;
+    const n = pri.required;
+    let head;
+    if (!rk.answered) head = html`<span class="pill">Waiting for the Day 7 review</span>`;
+    else if (!rk.complete && !pri.isConfirmed) head = html`<span class="pill">Review ${rk.answered}/${rk.total} rated</span>`;
+    else if (!pri.isConfirmed) head = html`<span class="pill warn">Not confirmed yet</span>`;
+    else head = html`<span class="pill done">Confirmed ${pri.confirmedRole === 'participant' ? 'by them' : pri.confirmedRole === 'system' ? '(test data)' : 'by a coach'} · ${dateTimeFmt(pri.confirmedAt, ctx.user.timezone)}</span>`;
+    const canEdit = rk.complete && rk.eligibleKeys.length > 0;
+    const chosen = pri.confirmed || pri.recommended;
+    return html`<section class="panel"><h3>${icon('target')} Week 2 priorities ${head}</h3>
+${R.priorityTable(s.report, 1)}
+${canEdit ? html`<details class="adjust"${ctx.query.adjust ? raw(' open') : ''}><summary>${pri.isConfirmed ? 'Change their priorities' : 'Confirm for them'}</summary>
+<form method="post" action="/participants/${s.p.id}/priorities" data-pick="${n}">${csrfField(ctx)}
+<p class="hint">Same rules as the participant: pick ${n} of the areas rated 3 or higher. The system’s original recommendation is kept for comparison.</p>
+<div class="chips">${rk.categories.filter((c) => c.eligible).map((c) => html`<label class="chip pick-chip"><input type="checkbox" name="areas[]" value="${c.key}"${chosen.includes(c.key) ? raw(' checked') : ''}><span>${c.label} · ${c.highest}</span></label>`)}</div>
+<p><button class="btn small" data-pick-submit>Save priorities <span data-pick-count></span></button></p></form></details>` : ''}</section>`;
   }
 
   function dayTab(ctx, s) {
@@ -255,13 +272,16 @@ ${link ? html`<p class="muted">${p.password_hash ? 'This link signs them straigh
   }
 
   // ---------------------------------------------------------------- Actions
-  r.post('/participants/:id/focus', (ctx) => {
+  r.post('/participants/:id/priorities', (ctx) => {
     const p = participantFor(ctx, ctx.params.id);
     const e = P.currentEnrollment(db, p.id);
     if (!e) throw new HttpError(400, 'No program.');
-    const areas = (Array.isArray(ctx.body.areas) ? ctx.body.areas : []).filter((k) => F.AREA[k]);
-    db.run('UPDATE enrollments SET focus_areas=? WHERE id=?', ctx.body.reset || !areas.length ? null : JSON.stringify(areas), e.id);
-    ctx.setFlash(ctx.body.reset || !areas.length ? 'Focus areas are automatic again.' : 'Focus areas saved.');
+    const pri = R.build(db, e).pri;
+    if (!pri.ranking.complete) throw new HttpError(400, 'The Day 7 review needs every question rated first.');
+    const v = Pr.validate(pri.ranking, ctx.body.areas);
+    if (v.error) { ctx.setFlash(v.error, 'err'); return ctx.redirect(`/participants/${p.id}?adjust=1`); }
+    Pr.confirm(db, e.id, pri.ranking, v.keys, ctx.user);
+    ctx.setFlash('Priorities saved.');
     ctx.redirect(`/participants/${p.id}`);
   }, O);
 

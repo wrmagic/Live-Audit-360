@@ -107,6 +107,20 @@
     window.addEventListener('pagehide', () => { if (timer) { clearTimeout(timer); fetch(form.dataset.autosave, { method: 'POST', body: new URLSearchParams(new FormData(form)), headers: { 'x-autosave': '1' }, keepalive: true }); } });
   }
 
+  // ---------- Week 2 priorities: pick exactly N areas (no more than three)
+  $$('form[data-pick]').forEach((f) => {
+    const n = Number(f.dataset.pick);
+    const boxes = $$('input[type=checkbox]', f);
+    const btn = $('[data-pick-submit]', f); const count = $('[data-pick-count]', f);
+    const sync = () => {
+      const k = boxes.filter((b) => b.checked).length;
+      boxes.forEach((b) => { b.disabled = !b.checked && k >= n; const card = b.closest('.pick'); if (card) card.classList.toggle('off', b.disabled); });
+      if (count) count.textContent = `(${k} of ${n})`;
+      if (btn) btn.disabled = k !== n;
+    };
+    f.addEventListener('change', sync); sync();
+  });
+
   // ---------- food photos: shrink on the phone, then upload one by one
   const up = $('[data-upload]');
   if (up) {
