@@ -457,3 +457,10 @@ body.phone .preview-bar + .pmain .hero, body.has-hero .preview-bar ~ .pmain .her
 .adjust summary { cursor: pointer; color: var(--blue); font-weight: 600; margin-bottom: 8px; }
 .chip input:disabled + span { opacity: .4; }
 h3 .pill { font-family: var(--body); text-transform: none; letter-spacing: 0; margin-left: 6px; }
+/* Admin */
+.gap-s { margin-top: 10px; }
+.log td { vertical-align: top; }
+.log .when { white-space: nowrap; color: var(--muted); width: 1%; font-size: 13.5px; }
+.log small { display: block; color: var(--muted); }
+.filters .check { white-space: nowrap; font-size: 14px; }
+body.coach .preview-bar { position: sticky; top: 62px; z-index: 19; padding: 8px 24px; }

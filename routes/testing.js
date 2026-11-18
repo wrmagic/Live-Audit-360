@@ -38,10 +38,11 @@ function panel(ctx, s) {
 </div></section>`;
 }
 
-/** A banner across the phone app while a coach is previewing as a test participant. */
+/** A banner across every page while an admin or coach is signed in as someone else. */
 function previewBar(ctx) {
-  if (!ctx.cookies.coach_sid || !ctx.user || ctx.user.role !== 'participant') return '';
-  return html`<form method="post" action="/preview/exit" class="preview-bar">${csrfField(ctx)}<span>${icon('alert')} Preview: <b>${ctx.user.name}</b></span><button class="btn small">Back to coach view</button></form>`;
+  if (!ctx.user || !ctx.user.impersonated_by || !ctx.cookies.coach_sid) return '';
+  const toAdmin = /^\/admin/.test(ctx.cookies.return_to || '');
+  return html`<form method="post" action="/preview/exit" class="preview-bar">${csrfField(ctx)}<span>${icon('alert')} ${toAdmin ? 'Signed in as' : 'Preview:'} <b>${ctx.user.name}</b></span><button class="btn small">${toAdmin ? 'Back to admin' : 'Back to coach view'}</button></form>`;
 }
 
 module.exports = (r, { db, photoDir }) => {
@@ -107,18 +108,24 @@ module.exports = (r, { db, photoDir }) => {
   r.post('/participants/:id/preview', (ctx) => {
     const p = testParticipant(ctx, ctx.params.id);
     ctx.setCookie('coach_sid', ctx.sessionToken, { maxAge: 12 * 3600 });
-    ctx.setCookie('sid', auth.createSession(db, p), { maxAge: 12 * 3600 });
+    ctx.setCookie('return_to', '', { maxAge: 0 });
+    ctx.setCookie('sid', auth.createSession(db, p, { impersonatedBy: ctx.user.id }), { maxAge: 12 * 3600 });
+    require('../lib/audit').log(db, ctx.user, 'preview', p, 'Previewed a test participant');
     ctx.redirect('/m');
   }, O);
 
+  // Leave "signed in as": end that session and go back to the admin or coach who started it
   r.post('/preview/exit', (ctx) => {
     const coach = auth.loadSession(db, ctx.cookies.coach_sid);
-    const back = ctx.user && ctx.user.role === 'participant' ? ctx.user.id : null;
-    if (ctx.user && ctx.user.role === 'participant') auth.destroySession(db, ctx.sessionToken);
+    const was = ctx.user && ctx.user.impersonated_by ? ctx.user : null;
+    if (was) auth.destroySession(db, ctx.sessionToken);
+    const ret = ctx.cookies.return_to;
     ctx.setCookie('coach_sid', '', { maxAge: 0 });
-    if (!coach || coach.role === 'participant') { ctx.setCookie('sid', '', { maxAge: 0 }); return ctx.redirect('/login'); }
+    ctx.setCookie('return_to', '', { maxAge: 0 });
+    if (!coach || coach.role === 'participant' || coach.impersonated_by) { ctx.setCookie('sid', '', { maxAge: 0 }); return ctx.redirect('/login'); }
     ctx.setCookie('sid', ctx.cookies.coach_sid, { maxAge: 60 * 864e2 });
-    ctx.redirect(back ? `/participants/${back}` : '/participants');
+    if (typeof ret === 'string' && /^\/admin(\/|$)/.test(ret)) return ctx.redirect(ret);
+    ctx.redirect(was && was.role === 'participant' ? `/participants/${was.id}` : '/participants');
   }, { public: true });
 };
 

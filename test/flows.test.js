@@ -384,3 +384,83 @@ test('spec: the participant flow, storage, lock and challenge-level content', as
   assert.deepEqual(after.recommended, ['mental', 'sleep', 'phone'], 'the system’s recommendation is still kept');
   assert.equal(after.confirmed_role, 'head');
 });
+
+// ---------------------------------------------------------------- Super admin
+test('admin: who can get in, logging in as, and every action logged', async (t) => {
+  const { server, db, base, coach: coachId } = await setup();
+  t.after(() => server.close());
+  const admin = client(base);
+  await admin.login('head@x.test');
+  const today = P.todayIn('America/Los_Angeles');
+  await admin.post('/participants/new', { name: 'Pia Help', email: 'pia@x.test', start_date: today, timezone: 'America/Los_Angeles', coach_id: String(coachId) });
+  const pia = db.get("SELECT * FROM users WHERE email='pia@x.test'");
+  const pc = client(base);
+  await pc.post(`/invite/${pia.invite_token}`, { password: 'piapassword', password2: 'piapassword' });
+
+  // Only admins
+  const other = client(base);
+  await other.login('other@x.test');
+  for (const p of ['/admin', '/admin/users', `/admin/users/${pia.id}`, '/admin/log']) assert.equal((await other.get(p)).status, 403, p);
+  assert.equal((await other.post(`/admin/users/${pia.id}/login-as`)).status, 403);
+  assert.equal((await pc.get('/admin')).location, '/m');
+  for (const p of ['/admin', '/admin/users', `/admin/users/${pia.id}`, `/admin/users/${coachId}`, '/admin/log']) assert.equal((await admin.get(p)).status, 200, p);
+  assert.match((await admin.get('/admin/users')).text, /Pia Help/);
+
+  // Log in as a real participant, see their app, then come back
+  const seenBefore = db.get('SELECT last_seen FROM users WHERE id=?', pia.id).last_seen;
+  assert.equal((await admin.post(`/admin/users/${pia.id}/login-as`)).location, '/m');
+  const asPia = await admin.get('/m');
+  assert.match(asPia.text, /Signed in as <b>Pia Help/);
+  assert.match(asPia.text, /Back to admin/);
+  assert.equal(db.get('SELECT last_seen FROM users WHERE id=?', pia.id).last_seen, seenBefore, 'doesn’t change their last seen');
+  assert.equal((await admin.get('/admin')).location, '/m', 'no admin powers while signed in as them');
+  assert.equal((await admin.post('/preview/exit')).location, `/admin/users/${pia.id}`);
+  assert.equal((await admin.get('/admin')).status, 200, 'back to the admin');
+
+  // Log in as a coach: the coach site shows the bar
+  await admin.post(`/admin/users/${coachId}/login-as`);
+  const asCoach = await admin.get('/participants');
+  assert.match(asCoach.text, /Signed in as <b>Other Coach/);
+  assert.doesNotMatch(asCoach.text, /href="\/admin"/);
+  await admin.post('/preview/exit');
+  // Never as another admin, or yourself
+  const head2 = db.insert('users', { role: 'head', name: 'Second Admin', email: 'h2@x.test', password_hash: auth.hashPassword('password1'), created_at: new Date().toISOString() });
+  assert.equal((await admin.post(`/admin/users/${head2}/login-as`)).status, 403);
+
+  // Set a password: works, signs them out
+  await admin.post(`/admin/users/${pia.id}/password`, { password: 'brandnewpw' });
+  assert.equal((await pc.get('/m')).location.startsWith('/login'), true, 'signed out everywhere');
+  assert.equal((await client(base).login('pia@x.test', 'brandnewpw')).status, 303);
+
+  // Roles: make the coach an admin and back; the last admin can't be removed
+  await admin.post(`/admin/users/${coachId}/edit`, { name: 'Other Coach', email: 'other@x.test', role: 'head' });
+  assert.equal(db.get('SELECT role FROM users WHERE id=?', coachId).role, 'head');
+  await admin.post(`/admin/users/${coachId}/edit`, { name: 'Other Coach', email: 'other@x.test', role: 'coach' });
+  db.run('UPDATE users SET active=0 WHERE id=?', head2);
+  const me = db.get("SELECT id FROM users WHERE email='head@x.test'").id;
+  assert.equal((await admin.post(`/admin/users/${me}/deactivate`)).status, 400, 'can’t turn yourself off');
+
+  // Turning off a coach moves their clients
+  await admin.post(`/admin/users/${coachId}/deactivate`, { to: String(me) });
+  assert.equal(db.get('SELECT coach_id FROM users WHERE id=?', pia.id).coach_id, me);
+  assert.equal(db.get('SELECT active FROM users WHERE id=?', coachId).active, 0);
+  await admin.post(`/admin/users/${coachId}/reactivate`);
+
+  // Backup and export
+  const bk = await fetch(`${base}/admin/backup`, { method: 'POST', body: new URLSearchParams({ _csrf: admin.jar.csrf }), headers: { cookie: `sid=${admin.jar.sid}; csrf=${admin.jar.csrf}`, 'content-type': 'application/x-www-form-urlencoded' } });
+  assert.equal(bk.status, 200);
+  assert.equal(Buffer.from(await bk.arrayBuffer()).subarray(0, 15).toString(), 'SQLite format 3', 'a real database file');
+  const csv = await admin.post('/admin/export');
+  assert.match(csv.text, /Pia Help,pia@x\.test/);
+
+  // Delete needs DELETE typed
+  await admin.post(`/admin/users/${pia.id}/delete`, { confirm: 'nope' });
+  assert.ok(db.get('SELECT id FROM users WHERE id=?', pia.id));
+  await admin.post(`/admin/users/${pia.id}/delete`, { confirm: 'DELETE' });
+  assert.equal(db.get('SELECT id FROM users WHERE id=?', pia.id), undefined);
+
+  // Everything is in the log
+  const actions = db.all('SELECT action FROM admin_log').map((r) => r.action);
+  for (const a of ['login_as', 'set_password', 'edit', 'deactivate', 'reactivate', 'backup', 'export', 'delete']) assert.ok(actions.includes(a), a);
+  assert.match((await admin.get('/admin/log')).text, /Signed in as/);
+});

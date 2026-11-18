@@ -133,3 +133,7 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(fetch(e.request).catch(() => new Response(OFFLINE, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })));
 });`, 'text/javascript; charset=utf-8', { 'Cache-Control': 'no-cache' }), { public: true });
 };
+
+/** Admin tools: is a sign-in locked by too many tries, and unlock it. */
+module.exports.isLocked = (email) => (tries.get(email) || []).filter((x) => Date.now() - x < 15 * 60e3).length > 10;
+module.exports.unlock = (email) => { tries.delete(email); tries.delete('forgot:' + email); };
