@@ -3,7 +3,8 @@
 const { html, raw, dateFmt, dateTimeFmt, firstName } = require('../lib/html');
 const { layout, icon, csrfField, answersView, dayStrip, areaBars } = require('../lib/views');
 const { HttpError } = require('../lib/http');
-const F = require('../lib/forms');
+const defs = require('../lib/defs');
+const Rules = require('../lib/rules');
 const P = require('../lib/program');
 const R = require('../lib/report');
 const Pr = require('../lib/priorities');
@@ -15,14 +16,16 @@ const O = { coach: true };
 /** Everything the list and the detail page need about one participant. */
 function summary(db, p) {
   const e = P.currentEnrollment(db, p.id);
-  const pos = P.position(e, p.timezone);
+  const pos = P.positionOf(db, e, p.timezone);
+  const D = pos ? pos.D : null;
   const map = e ? P.responseMap(db, e.id) : {};
   let lastEntry = null;
   for (const d of Object.values(map)) for (const f of Object.values(d)) if (!lastEntry || f.updated_at > lastEntry) lastEntry = f.updated_at;
   const report = e && pos && pos.started ? R.build(db, e) : null;
-  const week = pos && pos.day >= 8 ? 2 : 1;
+  const current = report ? R.currentAnalysis(report, pos.day) : null;
+  const alerts = e ? Rules.alertsFor(db, e.id, { unseen: true }) : [];
   const idle = pos && pos.started && !pos.finished && (!lastEntry || Date.now() - new Date(lastEntry) > 2 * 864e5);
-  return { p, e, pos, map, lastEntry, report, week, idle, completion: P.completion(map, pos) };
+  return { p, e, pos, D, map, lastEntry, report, current, alerts, idle, completion: P.completion(map, pos) };
 }
 
 /** For someone who hasn't chosen a password yet: when the last invite went out, and whether it has expired. */
@@ -38,15 +41,15 @@ function stateLabel(s) {
   if (!s.e) return html`<span class="pill">No program</span>`;
   if (!s.pos.started) return html`<span class="pill">Starts ${dateFmt(s.e.start_date, 'dow')}</span>`;
   if (s.pos.finished) return html`<span class="pill done">Finished</span>`;
-  return html`<span class="pill on">Day ${s.pos.day} of 14</span>`;
+  return html`<span class="pill on">Day ${s.pos.day} of ${s.D.PROGRAM_DAYS}</span>`;
 }
 
 function todayMarks(s) {
   if (!s.pos || !s.pos.started || s.pos.finished) return '';
   const got = s.map[s.pos.day] || {};
-  return html`<span class="marks">${F.formsForDay(s.pos.day).map((k) => {
+  return html`<span class="marks">${s.D.formsForDay(s.pos.day).map((k) => {
     const r = got[k]; const st = r && r.total && r.answered >= r.total ? 'done' : r && r.answered ? 'partial' : 'todo';
-    return html`<span class="mark ${st}" title="${F.FORMS[k].title}">${{ day1: 'Part 1', day2: 'Part 2', week1: 'Review 1', week2: 'Review 2' }[k] || F.FORMS[k].short}</span>`;
+    return html`<span class="mark ${st}" title="${s.D.FORMS[k].title}">${s.D.FORMS[k].short || s.D.FORMS[k].title}</span>`;
   })}</span>`;
 }
 
@@ -60,17 +63,38 @@ function tzSelect(name, value) {
 
 module.exports = (r, { db }) => {
   const programs = () => db.all("SELECT * FROM products WHERE kind='program' AND active=1 ORDER BY sort, id");
-  function programSelect(selected, compact = false) {
-    const list = programs();
-    const opts = html`<option value="">No charge (free)</option>${list.map((p) => html`<option value="${p.id}"${String(selected || '') === String(p.id) ? raw(' selected') : ''}>${p.name} · ${ST.priceLabel(p)}</option>`)}`;
-    if (compact) return html`<select name="product_id" title="Program and price">${opts}</select>`;
-    return html`<label class="fld"><span>Program and price</span><select name="product_id">${opts}</select>${list.length ? '' : html`<span class="hint">Super admins add programs and prices in Admin → Store.</span>`}</label>`;
+  /**
+   * Program and price in one list: each program (definition) with "No charge" plus the Store prices linked to it.
+   * Value: "programId:productId" (productId empty = free).
+   */
+  function planSelect(selected, compact = false) {
+    const progs = defs.activePrograms(db);
+    const prices = programs();
+    const sel = selected || `${defs.builtinId(db)}:`;
+    const opts = progs.map((pg) => html`<optgroup label="${pg.name}"><option value="${pg.id}:"${sel === `${pg.id}:` ? raw(' selected') : ''}>${pg.name} · No charge</option>${prices.filter((x) => x.program_id === pg.id).map((x) => html`<option value="${pg.id}:${x.id}"${sel === `${pg.id}:${x.id}` ? raw(' selected') : ''}>${pg.name} · ${x.name} · ${ST.priceLabel(x)}</option>`)}</optgroup>`);
+    if (compact) return html`<select name="plan" title="Program and price">${opts}</select>`;
+    return html`<label class="fld"><span>Program and price</span><select name="plan">${opts}</select>${prices.length ? '' : html`<span class="hint">Super admins add programs in Admin → Programs and prices in Admin → Store.</span>`}</label>`;
   }
-  function pickProgram(id) {
-    if (!id) return null;
-    const p = db.get("SELECT * FROM products WHERE id=? AND kind='program' AND active=1", Number(id));
-    if (!p) throw new HttpError(400, 'That program isn’t available.');
-    return p;
+  /** Which program version and which price (product, or null for free) the form picked. */
+  function pickPlan(b) {
+    let programId = null; let product = null;
+    if (b.plan) {
+      const [pid, prod] = String(b.plan).split(':');
+      programId = Number(pid);
+      if (prod) {
+        product = db.get("SELECT * FROM products WHERE id=? AND kind='program' AND active=1", Number(prod));
+        if (!product || product.program_id !== programId) throw new HttpError(400, 'That price isn’t available.');
+      }
+    } else if (b.product_id) {
+      product = db.get("SELECT * FROM products WHERE id=? AND kind='program' AND active=1", Number(b.product_id));
+      if (!product) throw new HttpError(400, 'That program isn’t available.');
+      programId = product.program_id;
+    }
+    if (!programId) programId = defs.builtinId(db);
+    const pg = db.get('SELECT * FROM programs WHERE id=? AND active=1', programId);
+    const v = pg && defs.latestVersion(db, pg.id);
+    if (!v) throw new HttpError(400, 'That program isn’t available.');
+    return { program: pg, versionId: v.id, product };
   }
   function payBadge(s) {
     const pu = s.e && ST.forEnrollment(db, s.e.id);
@@ -110,7 +134,13 @@ ${addons.length ? html`<form method="post" action="/participants/${s.p.id}/give"
     const active = real.filter((s) => s.pos && s.pos.started && !s.pos.finished);
     const loggedToday = active.filter((s) => s.map[s.pos.day]).length;
     const idle = active.filter((s) => s.idle);
-    const reviews = real.filter((s) => s.pos && (s.pos.day === 7 || s.pos.day === 8 || s.pos.day >= 14) && s.report && s.report[s.pos.day >= 14 ? 'w2' : 'w1'].hasReview);
+    const reviews = real.filter((s) => {
+      if (!s.report) return false;
+      const done = s.report.list.filter((w) => w.day <= s.pos.day);
+      const w = done[done.length - 1];
+      return w && w.hasReview && (s.pos.finished || s.pos.day <= w.day + 1);
+    });
+    const alerting = real.filter((s) => s.alerts.length);
     const counts = { active: active.length, upcoming: all.filter((s) => !s.pos || !s.pos.started).length, finished: all.filter((s) => s.pos && s.pos.finished).length, all: all.length };
     const qs = (o) => '?' + new URLSearchParams({ ...(head && ctx.query.coach ? { coach: ctx.query.coach } : {}), show, ...(q ? { q } : {}), ...o }).toString();
 
@@ -121,18 +151,19 @@ ${addons.length ? html`<form method="post" action="/participants/${s.p.id}/give"
 <div class="kpi"><b>${loggedToday}<small>/${active.length}</small></b><span>Logged something today</span></div>
 <div class="kpi ${idle.length ? 'warn' : ''}"><b>${idle.length}</b><span>Quiet for 2+ days</span></div>
 <div class="kpi"><b>${reviews.length}</b><span>Analysis ready to review</span></div>
+${alerting.length ? html`<div class="kpi warn"><b>${alerting.length}</b><span>With new alerts</span></div>` : ''}
 </section>
 <div class="toolbar"><nav class="seg">${[['active', 'In program'], ['upcoming', 'Starting soon'], ['finished', 'Finished'], ['all', 'All']].map(([k, l]) => html`<a href="${qs({ show: k })}" class="${show === k ? 'on' : ''}">${l} <small>${counts[k]}</small></a>`)}</nav>
 <form class="filters">${head ? html`<select name="coach" data-autosubmit><option value="all">All coaches</option>${coachOptions(db, coachFilter)}</select>` : ''}<input type="hidden" name="show" value="${show}"><input type="search" name="q" value="${q}" placeholder="Search name or email"></form></div>
 ${list.length ? html`<table class="list"><thead><tr><th>Participant</th>${head ? html`<th>Coach</th>` : ''}<th>Program</th><th>Today</th><th>Days complete</th><th>Challenges / priorities</th><th>Last entry</th></tr></thead><tbody>
 ${list.map((s) => {
-    const w = s.report ? s.report[s.week === 2 ? 'w2' : 'w1'] : null;
-    return html`<tr class="${s.idle ? 'idle' : ''}" data-href="/participants/${s.p.id}"><td><a href="/participants/${s.p.id}"><b>${s.p.name}</b></a>${s.p.is_test ? html` <span class="pill test">Test</span>` : html`<small>${s.p.email}</small>${inviteNote(ctx, s.p, ctx.url.pathname + ctx.url.search)}`}</td>
+    const w = s.current;
+    return html`<tr class="${s.idle ? 'idle' : ''}" data-href="/participants/${s.p.id}"><td><a href="/participants/${s.p.id}"><b>${s.p.name}</b></a>${s.p.is_test ? html` <span class="pill test">Test</span>` : html`<small>${s.p.email}</small>${inviteNote(ctx, s.p, ctx.url.pathname + ctx.url.search)}`}${s.alerts.length ? html` <a class="pill warn" href="/participants/${s.p.id}" title="${s.alerts.map((a) => a.title).join(' · ')}">${icon('alert')} ${s.alerts.length} alert${s.alerts.length === 1 ? '' : 's'}</a>` : ''}${s.D && s.D.programId !== defs.builtinId(db) ? html`<small>${s.D.name}</small>` : ''}</td>
 ${head ? html`<td>${s.p.coach_name || '—'}</td>` : ''}
 <td>${stateLabel(s)}${payBadge(s)}</td><td>${todayMarks(s)}</td>
 <td>${s.pos && s.pos.started ? html`<span class="meter"><span style="width:${s.completion.pct}%"></span></span> ${s.completion.done}/${s.completion.of}` : '—'}</td>
-<td>${s.report && s.report.pri.isConfirmed ? html`<span class="chips-s">${s.report.pri.confirmed.length ? s.report.pri.confirmed.map((k, i) => html`<span class="pill on" title="Priority ${i + 1}">${i + 1}. ${F.AREA[k].short}</span>`) : html`<span class="muted">No priorities</span>`}</span>`
-  : s.pos && s.pos.day >= 7 && s.report && s.report.pri.ranking.complete ? html`<span class="pill warn">Priorities not confirmed</span>`
+<td>${s.report && s.report.pri.isConfirmed ? html`<span class="chips-s">${s.report.pri.confirmed.length ? s.report.pri.confirmed.map((k, i) => html`<span class="pill on" title="Priority ${i + 1}">${i + 1}. ${(s.D.AREA[k] || { short: k }).short}</span>`) : html`<span class="muted">No priorities</span>`}</span>`
+  : s.report && s.report.pri.enabled && s.report.pri.confirmStep && s.pos.day >= s.report.pri.reviewDay && s.report.pri.ranking.complete ? html`<span class="pill warn">Priorities not confirmed</span>`
   : w && w.top.length ? html`<span class="chips-s">${w.top.map((a) => html`<span class="badge ${require('../lib/views').levelClass(a.score)}" title="${a.label}: ${a.score}">${a.short} ${a.score}</span>`)}</span>` : html`<span class="muted">—</span>`}</td>
 <td>${s.lastEntry ? dateTimeFmt(s.lastEntry, ctx.user.timezone) : html`<span class="muted">Nothing yet</span>`}${s.idle ? html` <span class="pill warn">Nudge</span>` : ''}</td></tr>`;
   })}</tbody></table>` : html`<div class="empty">${icon('people')}<p>${all.length ? 'No one matches.' : 'No participants yet.'}</p>${all.length ? '' : html`<a class="btn primary" href="/participants/new">Invite your first participant</a>`}</div>`}`,
@@ -148,7 +179,7 @@ ${error ? html`<p class="flash err">${error}</p>` : ''}
 <label class="fld"><span>Email</span><input type="email" name="email" value="${v.email || ''}" required maxlength="200"></label>
 <label class="fld"><span>Mobile phone <em>optional</em></span><input type="tel" name="phone" value="${v.phone || ''}" maxlength="40"></label>
 <label class="fld"><span>Day 1 is</span><input type="date" name="start_date" value="${v.start_date || P.todayIn(ctx.user.timezone)}" required></label>
-${programSelect(v.product_id)}
+${planSelect(v.plan)}
 ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select name="coach_id">${coachOptions(db, Number(v.coach_id) || ctx.user.id)}</select></label>` : ''}
 <label class="fld"><span>Their time zone</span>${tzSelect('timezone', v.timezone || ctx.user.timezone)}</label>
 <p class="hint span2">Day 1 can be today. They’ll get a link to choose a password. On Day 1 the app shows their first daily audit. Each day changes over at midnight in their time zone.</p>
@@ -158,8 +189,8 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
   r.get('/participants/new', (ctx) => ctx.html(inviteForm(ctx)), O);
   r.post('/participants/new', async (ctx) => {
     const b = ctx.body;
-    const v = { name: str(b.name, 100), email: str(b.email).toLowerCase(), phone: str(b.phone, 40), start_date: str(b.start_date, 10), coach_id: b.coach_id, timezone: str(b.timezone, 60), product_id: b.product_id };
-    const program = pickProgram(b.product_id);
+    const v = { name: str(b.name, 100), email: str(b.email).toLowerCase(), phone: str(b.phone, 40), start_date: str(b.start_date, 10), coach_id: b.coach_id, timezone: str(b.timezone, 60), plan: b.plan };
+    const plan = pickPlan(b);
     if (!v.name) return ctx.html(inviteForm(ctx, v, 'Enter their name.'), 400);
     if (!validEmail(v.email)) return ctx.html(inviteForm(ctx, v, 'That email address doesn’t look right.'), 400);
     if (!P.isDate(v.start_date)) return ctx.html(inviteForm(ctx, v, 'Choose the date of Day 1.'), 400);
@@ -174,8 +205,8 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
     const now = new Date().toISOString();
     const id = db.tx(() => {
       const uid = db.insert('users', { role: 'participant', name: v.name, email: v.email, phone: v.phone || null, coach_id: coachId, timezone: v.timezone, created_at: now });
-      const eid = db.insert('enrollments', { user_id: uid, start_date: v.start_date, created_at: now });
-      ST.assignProgram(db, { id: uid }, { id: eid, start_date: v.start_date }, program, ctx.user);
+      const eid = db.insert('enrollments', { user_id: uid, start_date: v.start_date, program_version_id: plan.versionId, created_at: now });
+      ST.assignProgram(db, { id: uid }, { id: eid, start_date: v.start_date }, plan.product, ctx.user);
       return uid;
     });
     const u = db.get('SELECT * FROM users WHERE id=?', id);
@@ -184,7 +215,7 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
 <div class="page-head"><div><p class="eyebrow"><a href="/participants">Participants</a></p><h1>${v.name} is set up</h1></div></div>
 <section class="panel invite-done"><p>${emailed ? html`We emailed an invite to <b>${v.email}</b>.` : html`Email isn’t set up on this site yet, so <b>send them this link yourself</b> (text or email).`} Day 1 is <b>${dateFmt(v.start_date, 'long')}</b>.</p>
 <div class="copy"><input readonly value="${link}" data-copy><button type="button" class="btn" data-copybtn>Copy link</button></div>
-<p class="hint">The link works once, for 14 days. You can send a new one from their page.</p>
+<p class="hint">The link works once, for ${require('../lib/auth').INVITE_DAYS} days. You can send a new one from their page.</p>
 <p><a class="btn primary" href="/participants/${id}">Open ${firstName(v.name)}’s page</a> <a class="btn ghost" href="/participants/new">Invite another</a></p></section>`,
     }));
   }, O);
@@ -194,21 +225,21 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
     const p = participantFor(ctx, ctx.params.id);
     const s = summary(db, p);
     const coach = p.coach_id ? db.get('SELECT name FROM users WHERE id=?', p.coach_id) : null;
-    const tabs = [['overview', 'Overview'], ['day', 'Daily answers'], ['week1', 'Day 7 analysis'], ['week2', 'Day 14 analysis'], ['notes', 'Notes'], ['settings', 'Settings']];
+    const tabs = [['overview', 'Overview'], ['day', 'Daily answers'], ...(s.D ? s.D.analyses.map((a) => [`an-${a.key}`, a.label]) : []), ['notes', 'Notes'], ['settings', 'Settings']];
     const tab = tabs.some(([k]) => k === ctx.query.tab) ? ctx.query.tab : 'overview';
     const base = `/participants/${p.id}`;
     let body;
     if (!s.e) body = html`<div class="empty"><p>No program yet.</p></div>`;
     else if (tab === 'overview') body = html`${p.is_test ? require('./testing').panel(ctx, s) : ''}${overview(ctx, s)}`;
     else if (tab === 'day') body = dayTab(ctx, s);
-    else if (tab === 'week1' || tab === 'week2') body = s.report ? R.weekReport(s.report, tab === 'week1' ? 1 : 2, { who: firstName(p.name), coach: true }) : html`<div class="empty"><p>The program hasn’t started yet.</p></div>`;
+    else if (tab.startsWith('an-')) body = s.report ? R.analysisReport(s.report, tab.slice(3), { who: firstName(p.name), coach: true }) : html`<div class="empty"><p>The program hasn’t started yet.</p></div>`;
     else if (tab === 'notes') body = notesTab(ctx, p);
     else body = settingsTab(ctx, s);
     if (tab === 'settings' && !s.e) body = settingsTab(ctx, s);
 
     ctx.html(layout(ctx, { title: p.name, nav: 'people', body: html`
 <div class="page-head person"><div><p class="eyebrow"><a href="/participants">Participants</a></p><h1>${p.name}</h1>
-<p class="muted">${p.is_test ? html`<span class="pill test">Test participant</span> ` : p.email}${p.phone ? html` · <a href="tel:${p.phone}">${p.phone}</a>` : ''}${coach ? html` · Coach: ${coach.name}` : ''}</p>${p.is_test ? '' : inviteNote(ctx, p, `/participants/${p.id}`)}</div>
+<p class="muted">${s.D ? html`<b>${s.D.name}</b>${s.D.version > 1 ? ` (v${s.D.version})` : ''} · ` : ''}${p.is_test ? html`<span class="pill test">Test participant</span> ` : p.email}${p.phone ? html` · <a href="tel:${p.phone}">${p.phone}</a>` : ''}${coach ? html` · Coach: ${coach.name}` : ''}</p>${p.is_test ? '' : inviteNote(ctx, p, `/participants/${p.id}`)}</div>
 <div class="head-state">${stateLabel(s)}${payBadge(s)}${s.e ? html`<small>${dateFmt(s.e.start_date)} – ${dateFmt(s.pos.endDate)}</small>` : ''}
 ${s.e && !s.pos.started ? html`<form method="post" action="/participants/${p.id}/start-today">${csrfField(ctx)}<button class="btn small primary">Start today</button></form>` : ''}</div></div>
 ${s.e ? html`<div class="person-strip">${dayStrip(s.map, s.pos, { link: (d) => `${base}?tab=day&day=${d}` })}<div class="person-stats"><span><b>${s.completion.done}</b>/${s.completion.of} days complete</span><span><b>${P.streak(s.map, s.pos)}</b> day streak</span><span>Last entry <b>${s.lastEntry ? dateTimeFmt(s.lastEntry, ctx.user.timezone) : 'none yet'}</b></span></div></div>` : ''}
@@ -219,12 +250,18 @@ ${s.e ? html`<div class="person-strip">${dayStrip(s.map, s.pos, { link: (d) => `
 
   function overview(ctx, s) {
     if (!s.report) return html`<section class="panel"><h3>Program starts ${dateFmt(s.e.start_date, 'long')}</h3><p class="muted">Nothing to show until Day 1.</p></section>`;
-    const w = s.week === 2 ? s.report.w2 : s.report.w1;
+    const w = s.current;
+    const D = s.D;
+    const an = D.analyses.find((a) => a.key === (w && w.key));
+    const prev = an && an.compareTo ? s.report.byKey[an.compareTo] : null;
+    const isPri = D.priAnalysis && w && D.priAnalysis.key === w.key;
+    const ranking = w ? (isPri ? s.report.pri.ranking : s.report.ranks[w.key]) : null;
     const notes = db.all('SELECT n.*, u.name author FROM notes n JOIN users u ON u.id=n.author_id WHERE participant_id=? ORDER BY n.created_at DESC LIMIT 3', s.p.id);
-    return html`${priorityPanel(ctx, s)}<div class="cols">
-<section class="panel"><h3>Week ${s.week} so far ${w.hasReview ? html`<span class="pill done">Review done</span>` : ''}</h3>
-<ul class="summary">${require('../lib/scoring').summary(w, firstName(s.p.name), s.week === 1 ? s.report.pri.ranking : s.report.rank2).map((l) => html`<li>${l}</li>`)}</ul>
-${areaBars(w.areas, { compareTo: s.week === 2 ? s.report.w1.areas : null })}<p class="hint">Bars blend the daily challenge ratings with the review. Week 2 priorities come only from the review ratings (table above).</p></section>
+    return html`${alertsPanel(ctx, s)}${D.priorities.enabled ? priorityPanel(ctx, s) : ''}<div class="cols">
+${w ? html`<section class="panel"><h3>${w.label}: days ${w.from}–${Math.min(w.to, s.pos.day)} so far ${w.hasReview ? html`<span class="pill done">Review done</span>` : ''}</h3>
+<ul class="summary">${require('../lib/scoring').summary(w, firstName(s.p.name), ranking && ranking.total ? ranking : null, ranking ? ranking.threshold : 3).map((l) => html`<li>${l}</li>`)}</ul>
+${D.results.scores !== false ? html`${areaBars(w.areas, { compareTo: prev ? prev.areas : null })}<p class="hint">Bars blend the daily challenge ratings with the review.${D.priorities.enabled ? ' Priorities come only from the review ratings (table above).' : ''}</p>` : ''}
+<p><a href="/participants/${s.p.id}?tab=an-${w.key}">Open the full ${w.label.toLowerCase()}</a></p></section>` : html`<section class="panel"><h3>Progress</h3><p class="muted">This program has no analyses. Answers are under Daily answers.</p></section>`}
 <div>
 <section class="panel"><h3>${icon('notes')} Latest notes</h3>${notes.length ? notes.map((n) => html`<p class="note"><small>${dateTimeFmt(n.created_at, ctx.user.timezone)} · ${n.author}</small>${n.body}</p>`) : html`<p class="muted">No notes yet.</p>`}<a href="/participants/${s.p.id}?tab=notes">Add a note</a></section>
 </div></div>`;
@@ -235,34 +272,44 @@ ${areaBars(w.areas, { compareTo: s.week === 2 ? s.report.w1.areas : null })}<p c
     const rk = pri.ranking;
     const n = pri.required;
     let head;
-    if (!rk.answered) head = html`<span class="pill">Waiting for the Day 7 review</span>`;
+    if (!rk.answered) head = html`<span class="pill">Waiting for the Day ${pri.reviewDay} review</span>`;
     else if (!rk.complete && !pri.isConfirmed) head = html`<span class="pill">Review ${rk.answered}/${rk.total} rated</span>`;
     else if (!pri.isConfirmed) head = html`<span class="pill warn">Not confirmed yet</span>`;
     else head = html`<span class="pill done">Confirmed ${pri.confirmedRole === 'participant' ? 'by them' : pri.confirmedRole === 'system' ? '(test data)' : 'by a coach'} · ${dateTimeFmt(pri.confirmedAt, ctx.user.timezone)}</span>`;
     const canEdit = rk.complete && rk.eligibleKeys.length > 0;
     const chosen = pri.confirmed || pri.recommended;
-    return html`<section class="panel"><h3>${icon('target')} Week 2 priorities ${head}</h3>
-${R.priorityTable(s.report, 1)}
+    return html`<section class="panel"><h3>${icon('target')} Priorities ${head}</h3>
+${R.priorityTable(s.report, s.D.priAnalysis.key)}
 ${canEdit ? html`<details class="adjust"${ctx.query.adjust ? raw(' open') : ''}><summary>${pri.isConfirmed ? 'Change their priorities' : 'Confirm for them'}</summary>
 <form method="post" action="/participants/${s.p.id}/priorities" data-pick="${n}">${csrfField(ctx)}
-<p class="hint">Same rules as the participant: pick ${n} of the areas rated 3 or higher. The system’s original recommendation is kept for comparison.</p>
+<p class="hint">Same rules as the participant: pick ${n} of the areas rated ${rk.threshold} or higher. The system’s original recommendation is kept for comparison.</p>
 <div class="chips">${rk.categories.filter((c) => c.eligible).map((c) => html`<label class="chip pick-chip"><input type="checkbox" name="areas[]" value="${c.key}"${chosen.includes(c.key) ? raw(' checked') : ''}><span>${c.label} · ${c.highest}</span></label>`)}</div>
 <p><button class="btn small" data-pick-submit>Save priorities <span data-pick-count></span></button></p></form></details>` : ''}</section>`;
   }
 
+  function alertsPanel(ctx, s) {
+    const list = Rules.alertsFor(db, s.e.id).slice(0, 8);
+    if (!list.length) return '';
+    const unseen = list.filter((a) => !a.seen_at).length;
+    return html`<section class="panel alerts"><h3>${icon('alert')} Alerts ${unseen ? html`<span class="pill warn">${unseen} new</span>` : ''}</h3>
+${list.map((a) => html`<p class="alert-row ${a.seen_at ? 'seen' : ''}"><b>${a.title}</b> ${a.text}${a.link ? html` <a href="${a.link}" target="_blank" rel="noopener">Link</a>` : ''}<small>${dateTimeFmt(a.created_at, ctx.user.timezone)}</small></p>`)}
+${unseen ? html`<form method="post" action="/participants/${s.p.id}/alerts/seen">${csrfField(ctx)}<button class="btn small">Mark as seen</button></form>` : ''}</section>`;
+  }
+
   function dayTab(ctx, s) {
     if (!s.pos.started) return html`<p class="muted">The program hasn’t started yet.</p>`;
-    let day = Number(ctx.query.day) || Math.min(s.pos.open, F.PROGRAM_DAYS);
+    const D = s.D;
+    let day = Number(ctx.query.day) || Math.min(s.pos.open, D.PROGRAM_DAYS);
     day = Math.max(1, Math.min(day, s.pos.open));
     const photos = db.all('SELECT * FROM photos WHERE enrollment_id=? AND day=? ORDER BY created_at', s.e.id, day);
-    const forms = F.formsForDay(day);
+    const forms = D.formsForDay(day);
     const base = `/participants/${s.p.id}?tab=day&day=`;
     return html`<div class="day-nav">${day > 1 ? html`<a class="btn small ghost" href="${base}${day - 1}">← Day ${day - 1}</a>` : html`<span></span>`}<h2>Day ${day} · ${dateFmt(s.pos.dateOf(day), 'long')}</h2>${day < s.pos.open ? html`<a class="btn small ghost" href="${base}${day + 1}">Day ${day + 1} →</a>` : html`<span></span>`}</div>
-<section class="panel"><h3>${icon('camera')} Food &amp; drink photos <small>${photos.length}</small></h3>${photos.length ? html`<div class="gallery wide">${photos.map((ph) => html`<figure><a href="/photo/${ph.id}" target="_blank"><img src="/photo/${ph.id}" alt="Photo" loading="lazy"></a><figcaption>${dateTimeFmt(ph.created_at, s.p.timezone).split(', ').pop()}</figcaption></figure>`)}</div>` : html`<p class="muted">No photos for this day.</p>`}</section>
+${D.photos || photos.length ? html`<section class="panel"><h3>${icon('camera')} ${D.photos ? D.photos.label : 'Photos'} <small>${photos.length}</small></h3>${photos.length ? html`<div class="gallery wide">${photos.map((ph) => html`<figure><a href="/photo/${ph.id}" target="_blank"><img src="/photo/${ph.id}" alt="Photo" loading="lazy"></a><figcaption>${dateTimeFmt(ph.created_at, s.p.timezone).split(', ').pop()}</figcaption></figure>`)}</div>` : html`<p class="muted">No photos for this day.</p>`}</section>` : ''}
 ${forms.map((k) => {
     const r = (s.map[day] || {})[k];
     const ans = P.loadAnswers(db, s.e.id, day, k);
-    return html`<section class="panel answers"><h3>${F.FORMS[k].title} ${r ? html`<small>${r.answered}/${r.total} answered · saved ${dateTimeFmt(r.updated_at, ctx.user.timezone)}</small>` : html`<small>Not started</small>`}</h3>${r ? answersView(F.FORMS[k], ans) : ''}</section>`;
+    return html`<section class="panel answers"><h3>${D.FORMS[k].title} ${r ? html`<small>${r.answered}/${r.total} answered · saved ${dateTimeFmt(r.updated_at, ctx.user.timezone)}</small>` : html`<small>Not started</small>`}</h3>${r ? answersView(D.FORMS[k], ans) : ''}</section>`;
   })}`;
   }
 
@@ -286,8 +333,8 @@ ${s.e ? html`<label class="fld"><span>Day 1 of this program</span><input type="d
 <div>
 ${purchasesPanel(ctx, s)}
 ${linkPanel(ctx, p)}
-<section class="panel"><h3>Start another 14 days</h3><p class="muted">Starts a fresh program on the date you pick (today works) and sends them a new sign-in link. The earlier program is kept on record.</p>
-<form method="post" action="/participants/${p.id}/restart" class="inline">${csrfField(ctx)}<input type="date" name="start_date" value="${P.todayIn(p.timezone)}" required> ${programSelect(null, true)} <button class="btn" data-confirm="Start a new 14-day program for ${p.name}?">Start new program</button></form>
+<section class="panel"><h3>Start another program</h3><p class="muted">Starts a fresh program on the date you pick (today works) and sends them a new sign-in link. The earlier program is kept on record.</p>
+<form method="post" action="/participants/${p.id}/restart" class="inline">${csrfField(ctx)}<input type="date" name="start_date" value="${P.todayIn(p.timezone)}" required> ${planSelect(s.D ? `${s.D.programId}:` : null, true)} <button class="btn" data-confirm="Start a new program for ${p.name}?">Start new program</button></form>
 ${pastPrograms(ctx, p)}</section>
 <section class="panel danger"><h3>Remove</h3><p class="muted">They can’t sign in any more and disappear from your list. Their answers are kept.</p>
 <form method="post" action="/participants/${p.id}/deactivate">${csrfField(ctx)}<button class="btn danger" data-confirm="Remove ${p.name}? They won’t be able to sign in.">Remove participant</button></form></section>
@@ -309,7 +356,7 @@ ${link ? html`<p class="muted">${p.password_hash ? 'This link signs them straigh
   function pastPrograms(ctx, p) {
     const list = db.all('SELECT * FROM enrollments WHERE user_id=? ORDER BY start_date DESC', p.id);
     if (list.length < 2) return '';
-    return html`<p class="hint">Programs: ${list.map((e, i) => html`${i ? ', ' : ''}${dateFmt(e.start_date)}${i === 0 ? ' (current)' : ''}`)}</p>`;
+    return html`<p class="hint">Programs: ${list.map((e, i) => html`${i ? ', ' : ''}${defs.forEnrollment(db, e).name} from ${dateFmt(e.start_date)}${i === 0 ? ' (current)' : ''}`)}</p>`;
   }
 
   // ---------------------------------------------------------------- Actions
@@ -318,11 +365,18 @@ ${link ? html`<p class="muted">${p.password_hash ? 'This link signs them straigh
     const e = P.currentEnrollment(db, p.id);
     if (!e) throw new HttpError(400, 'No program.');
     const pri = R.build(db, e).pri;
-    if (!pri.ranking.complete) throw new HttpError(400, 'The Day 7 review needs every question rated first.');
+    if (!pri.enabled) throw new HttpError(400, 'This program doesn’t use priorities.');
+    if (!pri.ranking.complete) throw new HttpError(400, `The Day ${pri.reviewDay} review needs every question rated first.`);
     const v = Pr.validate(pri.ranking, ctx.body.areas);
     if (v.error) { ctx.setFlash(v.error, 'err'); return ctx.redirect(`/participants/${p.id}?adjust=1`); }
     Pr.confirm(db, e.id, pri.ranking, v.keys, ctx.user);
     ctx.setFlash('Priorities saved.');
+    ctx.redirect(`/participants/${p.id}`);
+  }, O);
+
+  r.post('/participants/:id/alerts/seen', (ctx) => {
+    const p = participantFor(ctx, ctx.params.id);
+    db.run("UPDATE rule_hits SET seen_at=? WHERE kind='alert' AND seen_at IS NULL AND enrollment_id IN (SELECT id FROM enrollments WHERE user_id=?)", new Date().toISOString(), p.id);
     ctx.redirect(`/participants/${p.id}`);
   }, O);
 
@@ -411,12 +465,12 @@ ${link ? html`<p class="muted">${p.password_hash ? 'This link signs them straigh
   r.post('/participants/:id/restart', async (ctx) => {
     const p = participantFor(ctx, ctx.params.id);
     if (!P.isDate(ctx.body.start_date)) throw new HttpError(400, 'Choose the date of Day 1.');
-    const program = pickProgram(ctx.body.product_id);
-    const eid = db.insert('enrollments', { user_id: p.id, start_date: ctx.body.start_date, created_at: new Date().toISOString() });
-    ST.assignProgram(db, p, { id: eid, start_date: ctx.body.start_date }, program, ctx.user);
+    const plan = pickPlan(ctx.body);
+    const eid = db.insert('enrollments', { user_id: p.id, start_date: ctx.body.start_date, program_version_id: plan.versionId, created_at: new Date().toISOString() });
+    ST.assignProgram(db, p, { id: eid, start_date: ctx.body.start_date }, plan.product, ctx.user);
     const { link, emailed } = await sendInvite(ctx, p, { programStart: ctx.body.start_date });
     ctx.html(layout(ctx, { title: 'New program', nav: 'people', body: html`<div class="page-head"><div><p class="eyebrow"><a href="/participants/${p.id}">${p.name}</a></p><h1>New program set up</h1></div></div>
-<section class="panel invite-done"><p>Day 1 is <b>${dateFmt(ctx.body.start_date, 'long')}</b>. ${emailed ? html`We emailed ${firstName(p.name)} a new sign-in link. You can also send it yourself:` : html`Send ${firstName(p.name)} this new sign-in link:`}</p>
+<section class="panel invite-done"><p><b>${plan.program.name}</b>. Day 1 is <b>${dateFmt(ctx.body.start_date, 'long')}</b>. ${emailed ? html`We emailed ${firstName(p.name)} a new sign-in link. You can also send it yourself:` : html`Send ${firstName(p.name)} this new sign-in link:`}</p>
 <div class="copy"><input readonly value="${link}" data-copy><button type="button" class="btn" data-copybtn>Copy link</button></div>
 <p class="hint">It’s also kept under Settings on their page.</p>
 <p><a class="btn primary" href="/participants/${p.id}">Back to ${firstName(p.name)}</a></p></section>` }));

@@ -8,7 +8,7 @@ const crypto = require('node:crypto');
 const { html, raw, firstName } = require('../lib/html');
 const { icon, csrfField } = require('../lib/views');
 const { HttpError } = require('../lib/http');
-const F = require('../lib/forms');
+const defs = require('../lib/defs');
 const P = require('../lib/program');
 const auth = require('../lib/auth');
 const { participantFor, str } = require('../lib/site');
@@ -27,12 +27,17 @@ function testParticipant(ctx, id) {
 function panel(ctx, s) {
   const p = s.p;
   const day = s.pos ? s.pos.day : 0;
+  const D = s.D;
+  const N = D.PROGRAM_DAYS;
+  const pri = D.priAnalysis ? D.priAnalysis.day : null;
+  const unlock = D.priorities.enabled ? D.priorities.unlockDay || pri + 1 : null;
+  const marks = (d) => [...D.analysisOn(d).map((a) => a.label), ...D.formsForDay(d).filter((k) => D.FORMS[k].kind === 'review').map((k) => D.FORMS[k].short || D.FORMS[k].title), ...(d === unlock ? [(D.priorities.contentLabel || 'plan') + ' starts'] : [])];
   return html`<section class="panel testing"><h3>${icon('alert')} Test participant</h3>
 <p class="muted">Use this account to try the program yourself. It isn’t counted in your numbers, and these tools only work on test participants.</p>
 <div class="test-grid">
 <form method="post" action="/participants/${p.id}/preview">${csrfField(ctx)}<h4>1. See their phone app</h4><p class="hint">Opens the app as ${p.name}. Everything works: fill in forms, add photos, watch videos. A bar at the top brings you back here.</p><button class="btn primary">${icon('phone')} Preview their app</button></form>
-<form method="post" action="/participants/${p.id}/jump">${csrfField(ctx)}<h4>2. Jump to a day</h4><p class="hint">Moves their Day 1 so today becomes the day you pick. Jump to Day 7 or 8 to choose the Week 2 priorities yourself; jumping to Day 9 or later confirms the recommended ones.</p>
-<div class="inline"><select name="day">${Array.from({ length: F.PROGRAM_DAYS }, (_, i) => i + 1).map((d) => html`<option value="${d}"${d === day ? raw(' selected') : ''}>Day ${d}${d === 7 ? ' · Week 1 review' : d === 8 ? ' · videos start' : d === 14 ? ' · final review' : ''}</option>`)}<option value="15"${day > F.PROGRAM_DAYS ? raw(' selected') : ''}>Finished</option></select><button class="btn">Jump</button></div>
+<form method="post" action="/participants/${p.id}/jump">${csrfField(ctx)}<h4>2. Jump to a day</h4><p class="hint">Moves their Day 1 so today becomes the day you pick. ${pri ? `Jump to Day ${pri} or ${pri + 1} to choose the priorities yourself; jumping to Day ${pri + 2} or later confirms the recommended ones.` : ''}</p>
+<div class="inline"><select name="day">${Array.from({ length: N }, (_, i) => i + 1).map((d) => html`<option value="${d}"${d === day ? raw(' selected') : ''}>Day ${d}${marks(d).length ? ` · ${marks(d).join(', ')}` : ''}</option>`)}<option value="${N + 1}"${day > N ? raw(' selected') : ''}>Finished</option></select><button class="btn">Jump</button></div>
 <label class="check"><input type="checkbox" name="fill" value="1" checked> Fill the days before it with sample answers</label></form>
 <form method="post" action="/participants/${p.id}/clear">${csrfField(ctx)}<h4>3. Start over</h4><p class="hint">Deletes every answer, photo, priority and watched video in this program and sets Day 1 to today.</p><button class="btn ghost" data-confirm="Delete all of ${p.name}’s answers and start again from Day 1?">Clear and restart</button></form>
 </div></section>`;
@@ -48,11 +53,14 @@ function previewBar(ctx) {
 module.exports = (r, { db, photoDir }) => {
   r.post('/participants/test', (ctx) => {
     const n = db.get("SELECT COUNT(*) n FROM users WHERE is_test=1 AND coach_id=?", ctx.user.id).n + 1;
-    const name = str(ctx.body.name, 100) || `Test Participant ${n}`;
+    const pg = ctx.body.program_id ? db.get('SELECT * FROM programs WHERE id=?', Number(ctx.body.program_id)) : null;
+    const v = defs.latestVersion(db, pg ? pg.id : defs.builtinId(db));
+    if (!v) throw new HttpError(400, 'That program hasn’t been published yet.');
+    const name = str(ctx.body.name, 100) || `Test Participant ${n}${pg && !pg.builtin ? ` (${pg.name})` : ''}`;
     const t = new Date().toISOString();
     const id = db.tx(() => {
       const uid = db.insert('users', { role: 'participant', name, email: `test-${crypto.randomBytes(5).toString('hex')}@test.invalid`, coach_id: ctx.user.id, timezone: ctx.user.timezone, is_test: 1, created_at: t });
-      db.insert('enrollments', { user_id: uid, start_date: P.todayIn(ctx.user.timezone), created_at: t });
+      db.insert('enrollments', { user_id: uid, start_date: P.todayIn(ctx.user.timezone), program_version_id: v.id, created_at: t });
       return uid;
     });
     auth.issueInvite(db, id); // a sign-in link, under Settings, for trying it on your own phone
@@ -63,31 +71,35 @@ module.exports = (r, { db, photoDir }) => {
   r.post('/participants/:id/jump', (ctx) => {
     const p = testParticipant(ctx, ctx.params.id);
     const e = P.currentEnrollment(db, p.id);
-    const day = Math.max(1, Math.min(F.PROGRAM_DAYS + 1, Number(ctx.body.day) || 1));
+    const D = defs.forEnrollment(db, e);
+    const N = D.PROGRAM_DAYS;
+    const day = Math.max(1, Math.min(N + 1, Number(ctx.body.day) || 1));
     const today = P.todayIn(p.timezone);
     let filled = 0;
     db.tx(() => {
       { db.run('UPDATE enrollments SET start_date=? WHERE id=?', P.addDays(today, -(day - 1)), e.id); require('../lib/store').syncTrial(db, e.id); }
       if (ctx.body.fill) {
-        // Each test participant gets their own pattern of challenges, a bit easier in Week 2
-        const bias = Object.fromEntries(F.AREAS.map((a) => [a.key, 1.5 + Math.random() * 3.3]));
+        // Each test participant gets their own pattern of challenges, a bit easier once the plan starts
+        const bias = Object.fromEntries(D.AREAS.map((a) => [a.key, 1.5 + Math.random() * 3.3]));
+        const easier = D.priorities.enabled ? D.priorities.unlockDay || D.priAnalysis.day + 1 : Math.ceil(N / 2) + 1;
         const map = P.responseMap(db, e.id);
-        for (let d = 1; d <= Math.min(day - 1, F.PROGRAM_DAYS); d++) {
-          for (const key of F.formsForDay(d)) {
+        for (let d = 1; d <= Math.min(day - 1, N); d++) {
+          for (const key of D.formsForDay(d)) {
             if (map[d] && map[d][key] && map[d][key].answered) continue; // keep anything already filled in
-            P.saveAnswers(db, e.id, d, key, fakeAnswers(F.FORMS[key], Math.random, bias, d >= 8 ? 1 : 0));
+            P.saveAnswers(db, e.id, d, key, fakeAnswers(D.FORMS[key], Math.random, bias, d >= easier ? 1 : 0, D));
             filled++;
           }
         }
       }
-      // Priorities belong to Day 7: going back before it clears them; going past Day 8 confirms the recommendation
-      if (day <= Pr.REVIEW_DAY) Pr.reopen(db, e.id);
-      else if (day >= 9 && !Pr.load(db, e.id)) {
+      // Priorities belong to their review day: going back to it clears them; going two days past confirms the recommendation
+      const rd = Pr.reviewDayOf(D);
+      if (rd && day <= rd) Pr.reopen(db, e.id);
+      else if (rd && day >= rd + 2 && !Pr.load(db, e.id)) {
         const rk = require('../lib/report').build(db, e).pri.ranking;
         if (rk.complete) Pr.confirm(db, e.id, rk, rk.recommended, null);
       }
     });
-    ctx.setFlash(`${p.name} is now on ${day > F.PROGRAM_DAYS ? 'the finished program' : `Day ${day}`}.${filled ? ` Filled in ${filled} form${filled === 1 ? '' : 's'} with sample answers.` : ''}`);
+    ctx.setFlash(`${p.name} is now on ${day > N ? 'the finished program' : `Day ${day}`}.${filled ? ` Filled in ${filled} form${filled === 1 ? '' : 's'} with sample answers.` : ''}`);
     ctx.redirect(`/participants/${p.id}`);
   }, O);
 
@@ -98,6 +110,7 @@ module.exports = (r, { db, photoDir }) => {
     db.tx(() => {
       for (const t of ['responses', 'photos', 'video_views']) db.run(`DELETE FROM ${t} WHERE enrollment_id=?`, e.id);
       db.run('DELETE FROM priorities WHERE enrollment_id=?', e.id);
+      db.run('DELETE FROM rule_hits WHERE enrollment_id=?', e.id);
       { db.run('UPDATE enrollments SET start_date=? WHERE id=?', P.todayIn(p.timezone), e.id); require('../lib/store').syncTrial(db, e.id); }
     });
     ctx.setFlash(`Cleared. ${p.name} starts again at Day 1 today.`);

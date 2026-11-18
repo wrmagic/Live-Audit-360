@@ -11,7 +11,6 @@ const { HttpError } = require('../lib/http');
 const auth = require('../lib/auth');
 const mail = require('../lib/mail');
 const audit = require('../lib/audit');
-const F = require('../lib/forms');
 const P = require('../lib/program');
 const Pr = require('../lib/priorities');
 const { sendInvite, currentLink, baseUrl, str, validEmail } = require('../lib/site');
@@ -28,7 +27,7 @@ const ACTIONS = {
   login_as: 'Signed in as', preview: 'Previewed', set_password: 'Set password for', send_link: 'Sent a sign-in link to',
   signout: 'Signed out everywhere', unlock: 'Unlocked sign-in for', edit: 'Edited', deactivate: 'Turned off', reactivate: 'Turned back on',
   delete: 'Permanently deleted', backup: 'Downloaded a database backup', export: 'Exported participants', test_email: 'Sent a test email', payment: 'Paid:', settings_paypal: 'Changed the PayPal settings', store: 'Changed the store:', purchase: 'Changed a purchase for', settings_email: 'Changed the email settings',
-  signout_all: 'Signed out everyone else', delete_tests: 'Deleted test participants',
+  signout_all: 'Signed out everyone else', program: 'Programs:', delete_tests: 'Deleted test participants',
 };
 
 function sizeOf(dir) {
@@ -57,7 +56,7 @@ function logRows(ctx, rows) {
 <td><b>${l.actor_name}</b> ${ACTIONS[l.action] || l.action}${l.target_name ? html` ${l.target_id ? html`<a href="/admin/users/${l.target_id}">${l.target_name}</a>` : l.target_name}` : ''}${l.detail ? html`<small>${l.detail}</small>` : ''}</td></tr>`)}</tbody></table>`;
 }
 
-const tabs = (on) => html`<nav class="tabs">${[['/admin', 'App', 'app'], ['/admin/users', 'Logins', 'users'], ['/admin/store', 'Store', 'store'], ['/admin/settings', 'Settings', 'settings'], ['/admin/log', 'Activity log', 'log']].map(([h, l, k]) => html`<a href="${h}" class="${on === k ? 'on' : ''}">${l}</a>`)}</nav>`;
+const tabs = (on) => html`<nav class="tabs">${[['/admin', 'App', 'app'], ['/admin/users', 'Logins', 'users'], ['/admin/programs', 'Programs', 'programs'], ['/admin/store', 'Store', 'store'], ['/admin/settings', 'Settings', 'settings'], ['/admin/log', 'Activity log', 'log']].map(([h, l, k]) => html`<a href="${h}" class="${on === k ? 'on' : ''}">${l}</a>`)}</nav>`;
 const pageHead = (title, sub) => html`<div class="page-head"><div><p class="eyebrow">Super admin</p><h1>${title}</h1>${sub ? html`<p class="muted">${sub}</p>` : ''}</div></div>`;
 
 const csvCell = (v) => {
@@ -79,7 +78,7 @@ module.exports = (r, { db, photoDir }) => {
     };
     let inProgram = 0;
     for (const u of db.all("SELECT id, timezone FROM users WHERE role='participant' AND active=1 AND is_test=0")) {
-      const pos = P.position(P.currentEnrollment(db, u.id), u.timezone);
+      const pos = P.positionOf(db, P.currentEnrollment(db, u.id), u.timezone);
       if (pos && pos.started && !pos.finished) inProgram++;
     }
     const dbBytes = ['', '-wal'].reduce((t, x) => { try { return t + fs.statSync(db.file + x).size; } catch { return t; } }, 0);
@@ -141,17 +140,17 @@ ${people.tests ? html`<form method="post" action="/admin/delete-tests" class="ga
 
   r.post('/admin/export', (ctx) => {
     const rows = db.all(`SELECT u.*, c.name coach_name FROM users u LEFT JOIN users c ON c.id=u.coach_id WHERE u.role='participant' ORDER BY u.name`);
-    const out = [['Name', 'Email', 'Phone', 'Coach', 'Status', 'Test', 'Invite accepted', 'Program start', 'Program day', 'Days complete', 'Week 2 priorities', 'Last entry', 'Last seen', 'Created']];
+    const out = [['Name', 'Email', 'Phone', 'Coach', 'Status', 'Test', 'Invite accepted', 'Program start', 'Program day', 'Days complete', 'Program', 'Priorities', 'Last entry', 'Last seen', 'Created']];
     for (const u of rows) {
       const e = P.currentEnrollment(db, u.id);
-      const pos = P.position(e, u.timezone);
+      const pos = P.positionOf(db, e, u.timezone);
       const map = e ? P.responseMap(db, e.id) : {};
       let last = '';
       for (const d of Object.values(map)) for (const f of Object.values(d)) if (f.updated_at > last) last = f.updated_at;
       const pri = e ? Pr.load(db, e.id) : null;
       out.push([u.name, u.is_test ? '' : u.email, u.phone, u.coach_name, u.active ? 'Active' : 'Off', u.is_test ? 'Yes' : '', u.password_hash ? 'Yes' : 'No',
-        e ? e.start_date : '', !pos ? '' : pos.finished ? 'Finished' : pos.started ? pos.day : 'Not started', pos ? P.completion(map, pos).done : '',
-        pri && pri.confirmed ? pri.confirmed.map((k) => F.AREA[k].label).join('; ') : '', last.slice(0, 16).replace('T', ' '), (u.last_seen || '').slice(0, 16).replace('T', ' '), u.created_at.slice(0, 10)]);
+        pos ? pos.D.name : '', e ? e.start_date : '', !pos ? '' : pos.finished ? 'Finished' : pos.started ? pos.day : 'Not started', pos ? P.completion(map, pos).done : '',
+        pri && pri.confirmed ? pri.confirmed.map((k) => (pos.D.AREA[k] || { label: k }).label).join('; ') : '', last.slice(0, 16).replace('T', ' '), (u.last_seen || '').slice(0, 16).replace('T', ' '), u.created_at.slice(0, 10)]);
     }
     audit.log(db, ctx.user, 'export', null, `${rows.length} participants`);
     ctx.send(200, '﻿' + out.map((r) => r.map(csvCell).join(',')).join('\r\n'), 'text/csv; charset=utf-8', { 'Content-Disposition': `attachment; filename="life-audit-360-participants-${P.todayIn(ctx.user.timezone)}.csv"`, 'Cache-Control': 'no-store' });
@@ -233,7 +232,7 @@ ${list.map((u) => html`<tr data-href="/admin/users/${u.id}" class="${u.active ? 
     const self = u.id === ctx.user.id;
     const clients = u.role !== 'participant' ? db.get("SELECT COUNT(*) n FROM users WHERE coach_id=? AND role='participant' AND active=1", u.id).n : 0;
     const e = u.role === 'participant' ? P.currentEnrollment(db, u.id) : null;
-    const pos = e ? P.position(e, u.timezone) : null;
+    const pos = e ? P.positionOf(db, e, u.timezone) : null;
     const history = db.all('SELECT * FROM admin_log WHERE target_id=? ORDER BY id DESC LIMIT 15', u.id);
     const staff = db.all("SELECT id, name FROM users WHERE role IN ('head','coach') AND active=1 AND id<>? ORDER BY name", u.id);
     ctx.html(layout(ctx, { title: u.name, nav: 'admin', body: html`<div class="page-head person"><div><p class="eyebrow"><a href="/admin/users">Logins</a></p><h1>${u.name}</h1>
@@ -245,7 +244,7 @@ ${list.map((u) => html`<tr data-href="/admin/users/${u.id}" class="${u.active ? 
 ${canLoginAs(ctx, u) ? html`<section class="panel"><h3>${icon('user')} Log in as ${firstName(u.name)}</h3>
 <p class="muted">See exactly what ${firstName(u.name)} sees, to help them. A blue bar at the top brings you back. ${u.role === 'participant' ? 'Anything you fill in is saved as their answers. ' : ''}It’s recorded in the activity log and doesn’t change their “last seen”.</p>
 <form method="post" action="/admin/users/${u.id}/login-as">${csrfField(ctx)}<button class="btn primary">Log in as ${firstName(u.name)}</button></form></section>` : ''}
-${u.role === 'participant' ? html`<section class="panel"><h3>${icon('cal')} Program</h3><p>${!e ? 'No program.' : !pos.started ? `Starts ${dateFmt(e.start_date, 'long')}.` : pos.finished ? 'Finished.' : `Day ${pos.day} of 14.`} <a href="/participants/${u.id}">Open their coach page</a></p></section>` : ''}
+${u.role === 'participant' ? html`<section class="panel"><h3>${icon('cal')} Program</h3><p>${!e ? 'No program.' : !pos.started ? `Starts ${dateFmt(e.start_date, 'long')}.` : pos.finished ? 'Finished.' : `Day ${pos.day} of ${pos.D.PROGRAM_DAYS} · ${pos.D.name}.`} <a href="/participants/${u.id}">Open their coach page</a></p></section>` : ''}
 <section class="panel"><h3>${icon('target')} Sign-in</h3>
 ${link ? html`<p class="muted">Current sign-in link (works once, until ${dateFmt(u.invite_expires.slice(0, 10))}):</p><div class="copy"><input readonly value="${link}" data-copy><button type="button" class="btn" data-copybtn>Copy link</button></div>` : ''}
 <form method="post" action="/admin/users/${u.id}/link" class="inline">${csrfField(ctx)}<button class="btn" ${u.active ? '' : raw('disabled')}>${link ? 'Make and send a new link' : 'Send a sign-in link'}</button></form>

@@ -1,6 +1,6 @@
 # Life Audit 360
 
-A 14-day life audit program. Participants log their days on their phone; coaches see everyone's answers, photos and analysis on a desktop dashboard.
+Life audit programs: the 14-day Life Audit plus any others you build in Admin → Programs. Participants log their days on their phone; coaches see everyone's answers, photos and analysis on a desktop dashboard.
 
 - **Days 1–7, Document, don't change.** Each day the participant fills in **Daily Audit Part 1** (check-in, movement, nutrition, hydration) and **Part 2** (phone, habits, sleep, environment, daily reflection), and photographs what they eat and drink. On Day 7 they also fill in the **End of Week Review** (Parts 1 and 2).
 - **Day 7 analysis and priorities.** Anything rated 3 or higher on the review is eligible for support. The app recommends up to three areas, and the participant confirms them or swaps in another eligible area. See *Week 2 priorities* below.
@@ -40,14 +40,27 @@ This follows the developer spec dated Oct 28, 2026. The code is in `lib/prioriti
 
 The area bars in the reports still blend the daily ratings with the review, as an overall picture. Only the review ratings decide the priorities.
 
-## Changing the questions
+## Programs and the program builder
 
-Every form is written out as data in **`lib/forms.js`**. Change wording, add options or add questions there, and the phone screens, saving, coach views and scoring all follow. Answers are stored as JSON, so the database doesn't need changes.
+The 14-day program is now **one program in a list**. Super admins build more in **Admin → Programs**, each with its own:
 
-**Days 8–14 forms:** Days 8–14 currently use the same daily forms as Days 1–7. When the Week 2 forms are ready:
+- **Basics:** name, length (1–365 days), description, daily photos on or off, and **phases** (stretches of days with their own heading, tip and "remember" list).
+- **Categories and scale:** the categories that scores, priorities and content are grouped by, and what 1–5 means.
+- **Forms and questions:** daily forms and review forms, each scheduled on a range of days and/or specific days. Forms have sections; sections have questions: pick one (choices can carry a 1–5 score), pick any, yes/no, 1–5 rating (where 5 can mean good), ratings table, clock time and written answer. There's also "only show if…". Every question has a live preview, and **Preview** shows any form, any day, in a phone frame.
+- **Results:** what happens with the answers:
+  - **Analyses:** a report on a set day covering a stretch of days, optionally compared with an earlier one. Scores and charts can be turned off.
+  - **Priorities:** turn review ratings into priorities. You choose the threshold, how many priorities, the tie-breaker question, whether people confirm or swap, and the day content unlocks.
+  - **Coach alerts:** "when this answer, or this category's daily score, meets a condition for N days in a row". They show on the participant's page and in the list, with an optional email to the coach.
+  - **Participant messages:** the same kind of conditions; the message shows on their Today screen, with an optional email.
+- **Publish:** edits go into a draft. Publishing makes a new version, and you choose:
+  - **New people from now on.** Everyone already in the program keeps the version they started.
+  - **Push to everyone already in it.** Their saved answers are kept.
 
-1. Add them to `lib/forms.js` like `DAY_PART1`.
-2. List them in `formsForDay()`.
+  Every version is listed with how many people are on it. Programs can be duplicated, archived or, if no one has done them, deleted. **Advanced** shows the whole program as JSON for bulk edits or copying between sites.
+
+When inviting or restarting someone, coaches pick **program and price** in one list: each program with "No charge", plus the prices linked to it in **Admin → Store**. **Content** is kept per program.
+
+The built-in definition lives in `lib/forms.js` (`BUILTIN`). It's loaded as version 1 the first time the app starts; after that, edit it in the builder. `lib/defs.js` turns a definition into what the app runs on, and its top comment documents the format.
 
 ## Try it on your own computer
 
@@ -102,7 +115,10 @@ Right now the participant app is a web app that installs to the home screen and 
 
 ```
 server.js            web server: sign-in, page access, form handling
-lib/forms.js         the four forms, the eight life areas, which forms go on which day
+lib/forms.js         question helpers and the built-in 14-day program definition
+lib/defs.js          programs: versions, publishing, compiling a definition, checks
+lib/rules.js         results rules: coach alerts and participant messages
+routes/programs.js   Admin → Programs: the program builder
 lib/priorities.js    Week 2 priorities: eligibility, ranking, recommend, confirm
 lib/scoring.js       area scores, Week 1 vs Week 2
 lib/report.js        the Day 7 / Day 14 analysis page

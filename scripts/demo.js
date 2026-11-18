@@ -2,6 +2,7 @@
 // Sample data for trying Life Audit 360: a second coach, participants at different points in the
 // program with made-up answers, and sample videos. Used by `npm run demo` and the tests.
 const F = require('../lib/forms');
+const defs = require('../lib/defs');
 const P = require('../lib/program');
 const auth = require('../lib/auth');
 const { now } = require('../lib/db');
@@ -13,12 +14,13 @@ function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 10139
  * Made-up answers for one form. bias: {area: 1..5}, how much of a challenge each area is for this person;
  * better: how much easier Week 2 is (0 = same).
  */
-function fakeAnswers(form, rand, bias, better = 0) {
+function fakeAnswers(form, rand, bias, better = 0, D = null) {
+  const firstArea = D && D.AREAS[0] ? D.AREAS[0].key : 'work';
   const out = {};
   const clamp = (x) => Math.max(1, Math.min(5, Math.round(x)));
   const around = (c) => clamp(c - better + (rand() - 0.5) * 2.2);
   for (const q of F.questions(form)) {
-    const f = q.field; const area = q.section.area || 'work';
+    const f = q.field; const area = q.field.area || q.section.area || firstArea;
     const c = bias[area] || 3;
     if (f.optional && rand() < 0.75) continue;
     if (f.showIf) continue; // filled after the yes/no below
@@ -46,9 +48,10 @@ function fakeAnswers(form, rand, bias, better = 0) {
     if (!q.field.showIf || !F.visible(q, out)) continue;
     const pool = q.field.options; out[q.name] = [...pool].sort(() => rand() - 0.5).slice(0, 1 + Math.floor(rand() * 2));
   }
-  if (form.key === 'week2') {
-    const top = Object.entries(bias).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => F.AREA[k].label);
-    out['wrapup.priorities'] = top;
+  // The "your top priorities" question, if this form has the one the program names
+  const stated = D && D.priorities.statedQuestion;
+  if (stated && F.questions(form).some((q) => q.name === stated)) {
+    out[stated] = Object.entries(bias).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => (D.AREA[k] || {}).label).filter(Boolean);
   }
   return out;
 }
@@ -57,6 +60,8 @@ function seed(db, headId) {
   const pwHash = auth.hashPassword('demo1234');
   const coachId = db.insert('users', { role: 'coach', name: 'Jordan Reyes', email: 'jordan@example.com', password_hash: pwHash, created_at: now() });
   const tz = 'America/Los_Angeles';
+  const builtin = defs.builtinId(db);
+  const D = defs.forVersion(db, defs.latestVersion(db, builtin).id);
   const today = P.todayIn(tz);
   const people = [
     { name: 'Maria Lopez', email: 'maria@example.com', day: 4, coach: headId, bias: { mental: 4, physical: 3, nutrition: 3, sleep: 4, phone: 4, work: 3, relationships: 2, discipline: 3 }, skip: [2] },
@@ -70,14 +75,14 @@ function seed(db, headId) {
     const rand = rng(1000 + i * 77);
     const start = P.addDays(today, -(p.day - 1));
     const uid = db.insert('users', { role: 'participant', name: p.name, email: p.email, password_hash: pwHash, coach_id: p.coach, timezone: tz, created_at: now() });
-    const eid = db.insert('enrollments', { user_id: uid, start_date: p.day ? start : P.addDays(today, 2), created_at: now() });
-    const lastDay = Math.min(p.day, F.PROGRAM_DAYS, p.stopAfter || 99);
+    const eid = db.insert('enrollments', { user_id: uid, start_date: p.day ? start : P.addDays(today, 2), program_version_id: D.versionId, created_at: now() });
+    const lastDay = Math.min(p.day, D.PROGRAM_DAYS, p.stopAfter || 99);
     for (let d = 1; d <= lastDay; d++) {
       if ((p.skip || []).includes(d)) continue;
       const better = d >= 8 ? 1.1 : 0;
-      for (const key of F.formsForDay(d)) {
+      for (const key of D.formsForDay(d)) {
         if (d === p.day && d !== 7 && d !== 14 && key === 'day2') continue; // today: only Part 1 done so far
-        P.saveAnswers(db, eid, d, key, fakeAnswers(F.FORMS[key], rand, p.bias, better));
+        P.saveAnswers(db, eid, d, key, fakeAnswers(D.FORMS[key], rand, p.bias, better, D));
       }
     }
     // Pretend the entries were saved on their own days
@@ -101,7 +106,7 @@ function seed(db, headId) {
     ['discipline', 'Habits that stick', 'Make it obvious, easy and satisfying.', null],
     ['relationships', 'Protecting your time with people who matter', 'Simple boundaries that help.', 12],
   ];
-  vids.forEach(([area, title, description, day], i) => db.insert('videos', { area, title, description, day, url: 'https://example.com/sample-video', sort: i, created_at: now() }));
+  vids.forEach(([area, title, description, day], i) => db.insert('videos', { program_id: builtin, area, title, description, day, url: 'https://example.com/sample-video', sort: i, created_at: now() }));
   // Challenge-level prompts and tools: only shown to people who rated that challenge 3 or higher
   const items = [
     ['prompt', 'sleep.ratings.inconsistent', 'Pick one wake-up time', 'Choose a wake-up time you can keep all 7 days, weekends included. Set it now, and write it here: ________', null],
@@ -111,14 +116,14 @@ function seed(db, headId) {
     ['prompt', 'mental.ratings.overthinking', 'The 10-minute worry window', 'Pick a 10-minute window each evening to write down what’s on your mind. Outside that window, note the worry and save it for later.', null],
     ['prompt', 'nutrition.ratings.water', 'Water with every meal', 'Drink one full glass of water before each meal this week. Tick it off in your daily log.', null],
   ];
-  items.forEach(([kind, challenge, title, description, day], i) => db.insert('videos', { kind, challenge, area: challenge.split('.')[0], title, description, day, url: '', sort: 20 + i, created_at: now() }));
+  items.forEach(([kind, challenge, title, description, day], i) => db.insert('videos', { program_id: builtin, kind, challenge, area: challenge.split('.')[0], title, description, day, url: '', sort: 20 + i, created_at: now() }));
   // Sample store: a program and a few add-ons
   [
     ['program', '14-Day Life Audit', 'The full 14-day program: a week of honest tracking, your analysis, then a week of coaching on your top priorities.', 'one_time', 19700, 7, null, null],
     ['addon', 'Coaching Club', 'A monthly group call, new videos every week, and a community of people doing the work.', 'monthly', 2900, 7, 'Welcome to the Club! Calls are every Tuesday at 6 PM Pacific. The link and replays are below.', 'https://example.com/club'],
     ['addon', '30-Day Meal Plan', 'Simple, realistic meals and a shopping list for each week.', 'one_time', 3900, 0, 'Your plan is ready. Start with Week 1 and the shopping list.', 'https://example.com/meal-plan'],
     ['addon', 'Sleep Reset Guide', 'A short guide to better sleep in seven nights.', 'free', 0, 0, 'Night 1: pick a fixed wake-up time and keep it all week.', null],
-  ].forEach(([kind, name, description, fee, price, trial, unlockText, unlockUrl], i) => db.insert('products', { kind, name, description, fee, price_cents: price, trial_days: trial, unlock_text: unlockText, unlock_url: unlockUrl, sort: i, created_at: now() }));
+  ].forEach(([kind, name, description, fee, price, trial, unlockText, unlockUrl], i) => db.insert('products', { program_id: kind === 'program' ? builtin : null, kind, name, description, fee, price_cents: price, trial_days: trial, unlock_text: unlockText, unlock_url: unlockUrl, sort: i, created_at: now() }));
   return logins;
 }
 

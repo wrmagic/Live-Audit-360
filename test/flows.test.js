@@ -13,6 +13,8 @@ const F = require('../lib/forms');
 const P = require('../lib/program');
 const S = require('../lib/scoring');
 const mail = require('../lib/mail');
+const defs = require('../lib/defs');
+const D14 = defs.compile(F.BUILTIN);
 
 function setup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'la360-'));
@@ -151,7 +153,7 @@ test('scoring: week analysis, focus areas and comparison', () => {
   }
   answers[7].week1 = { 'physical.ratings.energy': 5, 'physical.ratings.exercise': 5, 'sleep.ratings.quality': 4 };
   answers[7].week2 = { 'wrapup.priorities': ['Phone & social media'] };
-  const w1 = S.analyzeWeek(answers, 1);
+  const w1 = S.analyze(D14, answers, D14.analyses[0]);
   const by = Object.fromEntries(w1.areas.map((a) => [a.key, a]));
   assert.equal(by.physical.daily, 5);
   assert.equal(by.physical.review, 5);
@@ -159,26 +161,29 @@ test('scoring: week analysis, focus areas and comparison', () => {
   assert.equal(by.sleep.daily, 4);
   assert.equal(by.sleep.score, 4);
   assert.equal(w1.top[0].key, 'physical');
-  assert.equal(w1.facts.sleepHours, '6 – 7 hrs');
-  assert.equal(w1.facts.bedtime, '23:56', 'bedtimes either side of midnight average sensibly');
+  const facts = w1.facts.items.map((x) => x.value).join(' | ');
+  assert.match(facts, /6 – 7 hrs \(7 days\)/);
+  assert.match(facts, /around 11:56 PM/, 'bedtimes either side of midnight average sensibly');
 
 
   // Week 2 easier → negative change
   for (let d = 8; d <= 14; d++) answers[d] = { day1: { 'movement.challenge': 2 } };
-  const w2 = S.analyzeWeek(answers, 2);
-  const cmp = S.compare(w1, w2);
+  const w2 = S.analyze(D14, answers, D14.analyses[1]);
+  const cmp = S.compare(D14, w1, w2);
   assert.equal(cmp.find((a) => a.key === 'physical').change, -3);
 });
 
 test('forms: every question has a unique name and the day plan is right', () => {
-  for (const f of Object.values(F.FORMS)) {
+  for (const f of Object.values(D14.FORMS)) {
     const names = F.questions(f).map((q) => q.name);
     assert.equal(new Set(names).size, names.length, `${f.key} has duplicate question names`);
   }
-  assert.deepEqual(F.formsForDay(1), ['day1', 'day2']);
-  assert.deepEqual(F.formsForDay(7), ['day1', 'day2', 'week1', 'week2']);
-  assert.deepEqual(F.formsForDay(14), ['day1', 'day2', 'week1', 'week2']);
-  const priorities = F.parseAnswers(F.FORMS.week2, { 'wrapup.priorities': F.AREAS.slice(0, 5).map((a) => a.label) });
+  assert.deepEqual(D14.formsForDay(1), ['day1', 'day2']);
+  assert.deepEqual(D14.formsForDay(7), ['day1', 'day2', 'week1', 'week2']);
+  assert.deepEqual(D14.formsForDay(14), ['day1', 'day2', 'week1', 'week2']);
+  assert.equal(D14.PROGRAM_DAYS, 14);
+  assert.deepEqual(defs.validate(F.BUILTIN), [], 'the built-in program passes the builder’s checks');
+  const priorities = F.parseAnswers(D14.FORMS.week2, { 'wrapup.priorities': D14.AREAS.slice(0, 5).map((a) => a.label) });
   assert.equal(priorities['wrapup.priorities'].length, 3, 'top three priorities means at most three');
 });
 
@@ -190,7 +195,7 @@ test('demo data loads and every page renders', async (t) => {
   await coach.login('head@x.test');
   for (const p of ['/participants', '/participants?show=all', '/participants/new', '/videos', '/coaches']) assert.equal((await coach.get(p)).status, 200, p);
   for (const u of db.all("SELECT id FROM users WHERE role='participant'")) {
-    for (const tab of ['overview', 'day', 'week1', 'week2', 'notes', 'settings']) assert.equal((await coach.get(`/participants/${u.id}?tab=${tab}`)).status, 200, `${u.id} ${tab}`);
+    for (const tab of ['overview', 'day', 'an-w1', 'an-w2', 'notes', 'settings']) assert.equal((await coach.get(`/participants/${u.id}?tab=${tab}`)).status, 200, `${u.id} ${tab}`);
   }
   const derek = client(base);
   await derek.login('derek@example.com', 'demo1234');
@@ -234,11 +239,11 @@ test('sign-in links in Settings, new programs, and the testing tools', async (t)
   assert.match((await coach.get('/participants')).text, /<b>1<\/b><span>In a program now/, 'only Kim counts; tests are left out of the numbers');
   await coach.post(`/participants/${tid}/jump`, { day: '9', fill: '1' });
   const te = P.currentEnrollment(db, tid);
-  assert.equal(P.position(te, 'America/Los_Angeles').day, 9);
+  assert.equal(P.positionOf(db, te, 'America/Los_Angeles').day, 9);
   const filled = db.get('SELECT COUNT(DISTINCT day) n FROM responses WHERE enrollment_id=?', te.id).n;
   assert.equal(filled, 8, 'Days 1-8 filled, today left for you');
   assert.ok(db.get("SELECT COUNT(*) n FROM responses WHERE enrollment_id=? AND day=7 AND form='week2'", te.id).n, 'the Day 7 review is filled too');
-  assert.match((await coach.get(`/participants/${tid}?tab=week1`)).text, /Week 2 priorities/);
+  assert.match((await coach.get(`/participants/${tid}?tab=an-w1`)).text, /Recommendation/);
 
   // Preview as them, then come back
   const pv = await coach.post(`/participants/${tid}/preview`);
@@ -264,17 +269,14 @@ const Pr = require('../lib/priorities');
 /** A full End of Week Review: every question rated `base`, with some overrides. */
 function review(base, overrides = {}, stated = []) {
   const week1 = {}; const week2 = {};
-  for (const q of Pr.QUESTIONS) {
-    const v = overrides[q.key] ?? base;
-    (F.FORMS.week1.sections.some((sec) => sec.area === q.area) ? week1 : week2)[q.key] = v;
-  }
+  for (const q of D14.reviewQs) (q.form === 'week1' ? week1 : week2)[q.key] = overrides[q.key] ?? base;
   if (stated.length) week2['wrapup.priorities'] = stated;
   return { week1, week2 };
 }
 
 test('spec: eligibility, ranking order and the worked example', () => {
   // Page 2 example: Sleep 5, Mental 5, Phone 4, Nutrition 3, Physical 2 (everything else 1-2)
-  const rk = Pr.rank(review(1, {
+  const rk = Pr.rank(D14, review(1, {
     'sleep.ratings.quality': 5, 'sleep.ratings.hours': 4,             // sleep: highest 5, two rated 3-5
     'mental.ratings.stress': 5,                                       // mental: highest 5, one rated 3-5
     'phone.ratings.scrolling': 4, 'nutrition.ratings.water': 3,
@@ -290,26 +292,26 @@ test('spec: eligibility, ranking order and the worked example', () => {
   assert.equal(rk.items.find((i) => i.key === 'physical.ratings.energy').eligible, false);
 
   // Ties on highest and count are broken by the participant's stated priorities
-  const tie = Pr.rank(review(1, { 'work.ratings.time': 4, 'discipline.ratings.goals': 4 }, ['Discipline & habits']));
+  const tie = Pr.rank(D14, review(1, { 'work.ratings.time': 4, 'discipline.ratings.goals': 4 }, ['Discipline & habits']));
   assert.deepEqual(tie.recommended, ['discipline', 'work']);
-  const tie2 = Pr.rank(review(1, { 'work.ratings.time': 4, 'discipline.ratings.goals': 4 }, ['Work, time & productivity']));
+  const tie2 = Pr.rank(D14, review(1, { 'work.ratings.time': 4, 'discipline.ratings.goals': 4 }, ['Work, time & productivity']));
   assert.deepEqual(tie2.recommended, ['work', 'discipline']);
 });
 
 test('spec: never manufacture a third priority', () => {
-  const two = Pr.rank(review(2, { 'sleep.ratings.quality': 3, 'phone.ratings.mood': 4 }));
+  const two = Pr.rank(D14, review(2, { 'sleep.ratings.quality': 3, 'phone.ratings.mood': 4 }));
   assert.deepEqual(two.recommended, ['phone', 'sleep']);
   assert.equal(Pr.required(two), 2);
-  const none = Pr.rank(review(2));
+  const none = Pr.rank(D14, review(2));
   assert.deepEqual(none.recommended, []);
   assert.equal(Pr.required(none), 0);
   assert.deepEqual(Pr.validate(none, []), { keys: [] });
-  const partial = Pr.rank({ week1: { 'sleep.ratings.quality': 5 } });
+  const partial = Pr.rank(D14, { week1: { 'sleep.ratings.quality': 5 } });
   assert.equal(partial.complete, false, 'every question must be rated first');
 });
 
 test('spec: confirm or swap rules', () => {
-  const rk = Pr.rank(review(1, { 'sleep.ratings.quality': 5, 'mental.ratings.stress': 5, 'phone.ratings.scrolling': 4, 'nutrition.ratings.water': 3 }));
+  const rk = Pr.rank(D14, review(1, { 'sleep.ratings.quality': 5, 'mental.ratings.stress': 5, 'phone.ratings.scrolling': 4, 'nutrition.ratings.water': 3 }));
   assert.deepEqual(Pr.validate(rk, ['sleep', 'mental', 'nutrition']), { keys: ['sleep', 'mental', 'nutrition'] }, 'swap in another eligible area');
   assert.match(Pr.validate(rk, ['sleep', 'mental', 'physical']).error, /rated 3 or higher/);
   assert.match(Pr.validate(rk, ['sleep', 'sleep', 'mental']).error, /once/);
@@ -331,10 +333,10 @@ test('spec: the participant flow, storage, lock and challenge-level content', as
 
   // Content: a whole-area video, a challenge item for a challenge they flag, and one for a challenge rated 2
   const now = new Date().toISOString();
-  const vArea = db.insert('videos', { kind: 'video', area: 'sleep', title: 'Sleep basics', url: 'https://youtu.be/abcdefgh', created_at: now });
-  const vHit = db.insert('videos', { kind: 'prompt', area: 'sleep', challenge: 'sleep.ratings.quality', title: 'Quality prompt', url: '', description: 'Do this', created_at: now });
-  const vMiss = db.insert('videos', { kind: 'tool', area: 'sleep', challenge: 'sleep.ratings.hours', title: 'Hours tool', url: '', description: 'x', created_at: now });
-  const vOther = db.insert('videos', { kind: 'video', area: 'work', title: 'Not a priority', url: 'https://youtu.be/zzzzzzzz', created_at: now });
+  const vArea = db.insert('videos', { program_id: defs.builtinId(db), kind: 'video', area: 'sleep', title: 'Sleep basics', url: 'https://youtu.be/abcdefgh', created_at: now });
+  const vHit = db.insert('videos', { program_id: defs.builtinId(db), kind: 'prompt', area: 'sleep', challenge: 'sleep.ratings.quality', title: 'Quality prompt', url: '', description: 'Do this', created_at: now });
+  const vMiss = db.insert('videos', { program_id: defs.builtinId(db), kind: 'tool', area: 'sleep', challenge: 'sleep.ratings.hours', title: 'Hours tool', url: '', description: 'x', created_at: now });
+  const vOther = db.insert('videos', { program_id: defs.builtinId(db), kind: 'video', area: 'work', title: 'Not a priority', url: 'https://youtu.be/zzzzzzzz', created_at: now });
 
   // Day 7: the review is unfinished, so no recommendations yet
   assert.match((await me.get('/m/priorities')).text, /Finish your review first/);
@@ -342,7 +344,7 @@ test('spec: the participant flow, storage, lock and challenge-level content', as
   P.saveAnswers(db, e.id, 7, 'week1', r.week1);
   P.saveAnswers(db, e.id, 7, 'week2', r.week2);
   const pg = await me.get('/m/priorities');
-  assert.match(pg.text, /Choose your Week 2 priorities/);
+  assert.match(pg.text, /Choose your priorities/);
   assert.match(pg.text, /Other areas you can swap in/);
   assert.match(pg.text, /No support needed/);
 
@@ -353,7 +355,7 @@ test('spec: the participant flow, storage, lock and challenge-level content', as
   assert.deepEqual(saved.recommended, ['mental', 'sleep', 'phone'], 'original recommendation kept (mental and sleep tie on 5 with one challenge each; category order decides)');
   assert.deepEqual(saved.confirmed, ['sleep', 'mental', 'nutrition'], 'final choice stored separately');
   assert.equal(saved.confirmed_role, 'participant');
-  assert.equal(saved.ranking.items.length, Pr.QUESTIONS.length, 'every question’s rating, category and eligibility is stored');
+  assert.equal(saved.ranking.items.length, D14.reviewQs.length, 'every question’s rating, category and eligibility is stored');
   assert.ok(saved.ranking.items.every((i) => i.area && typeof i.eligible === 'boolean'));
 
   // The review is now locked; can reopen on Day 7 only
@@ -701,4 +703,110 @@ test('Store: programs and add-ons, PayPal checkout, trials, subscriptions, free 
   const other = client(base);
   await other.login('other@x.test');
   assert.equal((await other.get('/admin/store')).status, 403);
+});
+
+test('Program builder: a custom program end to end, results rules, and publishing for new people or everyone', async (t) => {
+  const { server, db, base } = await setup();
+  t.after(() => server.close());
+  const admin = client(base);
+  await admin.login('head@x.test');
+  const other = client(base);
+  await other.login('other@x.test');
+  assert.equal((await other.get('/admin/programs')).status, 403, 'only super admins build programs');
+
+  // Build a 5-day program: two categories, a daily form, a review on day 5, one analysis, priorities, an alert and a message
+  const mk = await admin.post('/admin/programs', { name: 'Stress Reset' });
+  const id = Number(/programs\/(\d+)/.exec(mk.location)[1]);
+  const P_ = `/admin/programs/${id}`;
+  await admin.post(`${P_}/basics`, { name: 'Stress Reset', days: '5', description: 'Five calmer days', photo_label: 'Photos' });
+  await admin.post(`${P_}/areas`, { 'label[]': ['General', 'Stress', ''], 'key[]': ['general', '', ''], 'short[]': ['General', 'Stress', ''], 'icon[]': ['target', 'brain', 'target'] });
+  let q = await admin.post(`${P_}/forms/daily/q/0/new`, { label: 'How stressed were you?', type: 'scale' });
+  await admin.post(q.location, { label: 'How stressed were you?', type: 'scale', area: 'stress', lo: 'Calm', hi: 'Very stressed' });
+  await admin.post(`${P_}/forms`, { title: 'Wrap-up', kind: 'review' });
+  q = await admin.post(`${P_}/forms/wrap_up/q/0/new`, { label: 'Rate these', type: 'grid' });
+  await admin.post(q.location, { label: 'Rate these', type: 'grid', rows: 'Work stress\nHome stress', colmode: 'one', rateAll: '1', area: 'stress' });
+  await admin.post(`${P_}/analyses`, { 'label[]': ['Day 5 analysis'], 'key[]': ['a1'], 'title[]': ['Your five days'], 'day[]': ['5'], 'from[]': ['1'], 'to[]': ['5'], 'compareTo[]': [''], scores: '1' });
+  await admin.post(`${P_}/priorities`, { enabled: '1', analysis: 'a1', threshold: '3', max: '1', unlockDay: '5', contentLabel: 'Your calm plan' });
+  await admin.post(`${P_}/rules/alert`, { name: 'High stress', type: 'answer', question: 'daily|today.how_stressed_were_you', op: '>=', value: '4', days: '2', text: 'Check in with them.' });
+  await admin.post(`${P_}/rules/message`, { name: 'Breathing tip', type: 'score', area: 'stress', op: '>=', value: '4', days: '1', text: 'Try box breathing tonight.' });
+  const draft = JSON.parse(db.get('SELECT draft FROM programs WHERE id=?', id).draft);
+  assert.deepEqual(defs.validate(draft), [], 'shrinking to 5 days pulled the phases and schedules inside it');
+  assert.equal((await admin.get(`${P_}/preview?form=wrap_up`)).status, 200);
+  assert.match((await admin.get('/participants/new')).text, /Life Audit 360 · 14 days · No charge/);
+  assert.doesNotMatch((await admin.get('/participants/new')).text, /Stress Reset/, 'not offered until published');
+  const pub = await admin.post(`${P_}/publish`, { note: 'first' });
+  assert.equal(pub.status, 303);
+  const v1 = defs.latestVersion(db, id);
+  assert.equal(v1.version, 1);
+  assert.match((await admin.get('/participants/new')).text, /Stress Reset · No charge/);
+
+  // Invite someone to it; Day 1 two days ago, so today is Day 3
+  const today = P.todayIn('America/Los_Angeles');
+  await admin.post('/participants/new', { name: 'Casey Calm', email: 'casey@x.test', start_date: P.addDays(today, -2), timezone: 'America/Los_Angeles', plan: `${id}:` });
+  const u = db.get("SELECT * FROM users WHERE email='casey@x.test'");
+  const e = P.currentEnrollment(db, u.id);
+  assert.equal(e.program_version_id, v1.id);
+  const me = client(base);
+  await me.post(`/invite/${u.invite_token}`, { password: 'caseypassword', password2: 'caseypassword' });
+  const home = (await me.get('/m')).text;
+  assert.match(home, /Day 3/);
+  assert.match(home, /Daily check-in/);
+  assert.doesNotMatch(home, /Part 1/, 'none of the 14-day forms');
+  assert.match((await me.get('/m/me')).text, /Stress Reset/);
+
+  // Two stressful days in a row: the coach alert fires on day 3; the message shows on Today
+  await me.post('/m/day/2/daily', { 'today.challenge': '2', 'today.how_stressed_were_you': '5' });
+  await me.post('/m/day/3/daily', { 'today.challenge': '2', 'today.how_stressed_were_you': '4' });
+  const alerts = db.all("SELECT * FROM rule_hits WHERE enrollment_id=? AND kind='alert'", e.id);
+  assert.equal(alerts.length, 1, 'two days in a row needed, so only day 3 matches');
+  assert.equal(alerts[0].day, 3);
+  assert.match((await me.get('/m')).text, /Try box breathing tonight/);
+  const coachView = (await admin.get(`/participants/${u.id}`)).text;
+  assert.match(coachView, /High stress/);
+  assert.match(coachView, /1 new/);
+  assert.match((await admin.get('/participants')).text, /1 alert/);
+  await admin.post(`/participants/${u.id}/alerts/seen`);
+  assert.doesNotMatch((await admin.get('/participants')).text, /1 alert/);
+
+  // Day 5: the review decides the one priority, confirmed automatically (no confirm step)
+  db.run('UPDATE enrollments SET start_date=? WHERE id=?', P.addDays(today, -4), e.id);
+  assert.match((await me.get('/m')).text, /Wrap-up/);
+  await me.post('/m/day/5/wrap_up', { 'main.rate_these.work_stress': '4', 'main.rate_these.home_stress': '2' });
+  const now = new Date().toISOString();
+  db.insert('videos', { program_id: id, kind: 'prompt', area: 'stress', title: 'Two-minute reset', url: '', description: 'Breathe in for four.', created_at: now });
+  db.insert('videos', { program_id: defs.builtinId(db), kind: 'prompt', area: 'stress', title: 'Other program item', url: '', description: 'x', created_at: now });
+  assert.match((await me.get('/m/priorities')).text, /Stress/);
+  assert.deepEqual(require('../lib/priorities').load(db, e.id).confirmed, ['stress']);
+  const plan = (await me.get('/m/videos')).text;
+  assert.match(plan, /Two-minute reset/);
+  assert.doesNotMatch(plan, /Other program item/, 'content belongs to its program');
+  const rep = (await me.get('/m/report/a1')).text;
+  assert.match(rep, /Your five days/);
+  assert.equal((await admin.get(`/participants/${u.id}?tab=an-a1`)).status, 200);
+  assert.match((await admin.get(`/videos?program=${id}`)).text, /Two-minute reset/);
+
+  // Edit and publish for new people only: Casey stays on v1
+  q = await admin.post(`${P_}/forms/daily/q/0/new`, { label: 'Did you take a break?', type: 'yesno' });
+  await admin.post(`${P_}/publish`, { note: 'added a question', push: '' });
+  const v2 = defs.latestVersion(db, id);
+  assert.equal(v2.version, 2);
+  assert.equal(P.currentEnrollment(db, u.id).program_version_id, v1.id, 'new people only');
+  assert.doesNotMatch((await me.get('/m/day/5/daily')).text, /take a break/);
+  // Another edit, pushed to everyone: Casey moves to v3 and keeps her answers
+  await admin.post(`${P_}/forms/daily/q/0/new`, { label: 'Did you get outside?', type: 'yesno' });
+  await admin.post(`${P_}/publish`, { push: '1' });
+  const v3 = defs.latestVersion(db, id);
+  assert.equal(P.currentEnrollment(db, u.id).program_version_id, v3.id, 'pushed to everyone');
+  const day5 = (await me.get('/m/day/5/daily')).text;
+  assert.match(day5, /get outside/);
+  assert.equal(db.get("SELECT COUNT(*) n FROM responses WHERE enrollment_id=?", e.id).n, 3, 'answers kept');
+  assert.match((await admin.get(`${P_}?s=publish`)).text, /v3/);
+
+  // The JSON editor refuses bad JSON; archiving hides it from invites; the built-in can't be archived
+  const bad = await admin.post(`${P_}/json`, { json: '{nope' });
+  assert.equal(bad.status, 303);
+  assert.equal(JSON.parse(db.get('SELECT draft FROM programs WHERE id=?', id).draft).days, 5);
+  await admin.post(`${P_}/active`);
+  assert.doesNotMatch((await admin.get('/participants/new')).text, /Stress Reset/);
+  assert.equal((await admin.post(`/admin/programs/${defs.builtinId(db)}/active`)).status, 400);
 });

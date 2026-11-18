@@ -7,7 +7,6 @@ const crypto = require('node:crypto');
 const { html, dateTimeFmt } = require('../lib/html');
 const { phone, icon, csrfField } = require('../lib/views');
 const { HttpError } = require('../lib/http');
-const F = require('../lib/forms');
 const P = require('../lib/program');
 const { participantFor } = require('../lib/site');
 
@@ -43,9 +42,9 @@ module.exports = (r, { db, photoDir: dir }) => {
 
   r.post('/m/photos/:day', (ctx) => {
     const e = P.currentEnrollment(db, ctx.user.id);
-    const pos = P.position(e, ctx.user.timezone);
+    const pos = P.positionOf(db, e, ctx.user.timezone);
     const day = Number(ctx.params.day);
-    if (!e || !pos || !Number.isInteger(day) || day < 1 || day > Math.min(pos.open, F.PROGRAM_DAYS)) throw new HttpError(403, 'Photos can be added from Day 1 up to today.');
+    if (!e || !pos || !Number.isInteger(day) || day < 1 || day > pos.open) throw new HttpError(403, 'Photos can be added from Day 1 up to today.');
     const buf = ctx.rawBuffer;
     const mime = sniff(buf);
     if (!mime) throw new HttpError(415, 'That file isn’t a photo.');
