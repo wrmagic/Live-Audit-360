@@ -527,3 +527,37 @@ test('My settings: appearance, profile and password, for coaches and participant
   assert.equal((await qc.post('/settings/appearance', { mode: 'auto', light: 'sunset', dark: 'gold' })).location, '/m/me');
   assert.match((await qc.get('/m')).text, /data-mode="auto"/);
 });
+
+test('Admin settings: email set in the app, stored encrypted, super admins only', async (t) => {
+  const { server, db, base } = await setup();
+  t.after(() => server.close());
+  const mail = require('../lib/mail');
+  const admin = client(base);
+  await admin.login('head@x.test');
+  assert.equal((await admin.get('/admin/settings')).status, 200);
+  const other = client(base);
+  await other.login('other@x.test');
+  assert.equal((await other.post('/admin/settings/email', { resend_key: 're_abcdefghijkl', from_email: 'x@y.test' })).status, 403);
+
+  assert.equal(mail.configured(), false);
+  await admin.post('/admin/settings/email', { resend_key: 'not-a-key', from_email: 'hello@coach.test' });
+  assert.equal(mail.configured(), false, 'bad key refused');
+  await admin.post('/admin/settings/email', { resend_key: 're_TestKey_123456789', from_email: 'hello@coach.test', from_name: 'Coach J' });
+  assert.equal(mail.configured(), true);
+  assert.equal(mail.config().source, 'app');
+  assert.equal(mail.config().from, 'Coach J <hello@coach.test>');
+  assert.equal(mail.config().resendKey, 're_TestKey_123456789');
+  const raw = db.get("SELECT value, secret FROM settings WHERE key='mail.resend_key'");
+  assert.equal(raw.secret, 1);
+  assert.ok(!raw.value.includes('TestKey'), 'not stored in plain text');
+  const page = (await admin.get('/admin/settings')).text;
+  assert.ok(!page.includes('re_TestKey_123456789'), 'never shown again');
+  assert.match(page, /••••6789/);
+  // Saving again without a key keeps the old one
+  await admin.post('/admin/settings/email', { from_email: 'team@coach.test' });
+  assert.equal(mail.config().resendKey, 're_TestKey_123456789');
+  assert.equal(mail.config().from, 'team@coach.test');
+  await admin.post('/admin/settings/email', { clear: '1' });
+  assert.equal(mail.configured(), false);
+  assert.ok(db.all('SELECT action FROM admin_log').some((r) => r.action === 'settings_email'));
+});

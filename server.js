@@ -12,6 +12,7 @@ const ROUTES = ['auth', 'participant', 'photos', 'testing', 'coach', 'coaches', 
 function createApp({ dbFile = process.env.DATABASE_FILE || path.join(__dirname, 'data', 'la360.db') } = {}) {
   const db = open(dbFile);
   require('./lib/superadmin').ensure(db);
+  require('./lib/mail').setSource(() => require('./lib/settings').mail(db)); // Admin → Settings, else Render's settings
   const photoDir = process.env.PHOTO_DIR || path.join(path.dirname(path.resolve(dbFile === ':memory:' ? path.join(__dirname, 'data', 'x') : dbFile)), 'photos');
   const router = new Router();
   for (const r of ROUTES) require(`./routes/${r}`)(router, { db, photoDir });

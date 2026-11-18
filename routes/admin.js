@@ -16,6 +16,7 @@ const P = require('../lib/program');
 const Pr = require('../lib/priorities');
 const { sendInvite, currentLink, baseUrl, str, validEmail } = require('../lib/site');
 const authRoutes = require('./auth');
+const S = require('../lib/settings');
 
 const O = { coach: true, super: true };
 const SA = require('../lib/superadmin');
@@ -26,7 +27,7 @@ const STARTED = Date.now();
 const ACTIONS = {
   login_as: 'Signed in as', preview: 'Previewed', set_password: 'Set password for', send_link: 'Sent a sign-in link to',
   signout: 'Signed out everywhere', unlock: 'Unlocked sign-in for', edit: 'Edited', deactivate: 'Turned off', reactivate: 'Turned back on',
-  delete: 'Permanently deleted', backup: 'Downloaded a database backup', export: 'Exported participants', test_email: 'Sent a test email',
+  delete: 'Permanently deleted', backup: 'Downloaded a database backup', export: 'Exported participants', test_email: 'Sent a test email', settings_email: 'Changed the email settings',
   signout_all: 'Signed out everyone else', delete_tests: 'Deleted test participants',
 };
 
@@ -56,7 +57,7 @@ function logRows(ctx, rows) {
 <td><b>${l.actor_name}</b> ${ACTIONS[l.action] || l.action}${l.target_name ? html` ${l.target_id ? html`<a href="/admin/users/${l.target_id}">${l.target_name}</a>` : l.target_name}` : ''}${l.detail ? html`<small>${l.detail}</small>` : ''}</td></tr>`)}</tbody></table>`;
 }
 
-const tabs = (on) => html`<nav class="tabs">${[['/admin', 'App', 'app'], ['/admin/users', 'Logins', 'users'], ['/admin/log', 'Activity log', 'log']].map(([h, l, k]) => html`<a href="${h}" class="${on === k ? 'on' : ''}">${l}</a>`)}</nav>`;
+const tabs = (on) => html`<nav class="tabs">${[['/admin', 'App', 'app'], ['/admin/users', 'Logins', 'users'], ['/admin/settings', 'Settings', 'settings'], ['/admin/log', 'Activity log', 'log']].map(([h, l, k]) => html`<a href="${h}" class="${on === k ? 'on' : ''}">${l}</a>`)}</nav>`;
 const pageHead = (title, sub) => html`<div class="page-head"><div><p class="eyebrow">Super admin</p><h1>${title}</h1>${sub ? html`<p class="muted">${sub}</p>` : ''}</div></div>`;
 
 const csvCell = (v) => {
@@ -101,7 +102,7 @@ module.exports = (r, { db, photoDir }) => {
 <div>
 <section class="panel"><h3>${icon('gear')} System</h3><div class="facts">
 <div class="fact"><span>Web address</span><b>${process.env.BASE_URL ? process.env.BASE_URL : html`<span class="warn-text">BASE_URL not set (using ${baseUrl(ctx)})</span>`}</b></div>
-<div class="fact"><span>Email</span><b>${mail.configured() ? html`On (${process.env.RESEND_API_KEY ? 'Resend' : 'Postmark'})` : html`<span class="warn-text">Off: invite links are shown to copy</span>`}</b></div>
+<div class="fact"><span>Email</span><b>${mail.configured() ? html`On (${mail.config().provider === 'postmark' ? 'Postmark' : 'Resend'}, ${mail.config().source === 'app' ? html`<a href="/admin/settings">Admin settings</a>` : 'Render settings'})` : html`<span class="warn-text">Off: <a href="/admin/settings">set it up</a></span>`}</b></div>
 <div class="fact"><span>Last email sent</span><b>${lastMail ? `${dateTimeFmt(lastMail.at, ctx.user.timezone)}${lastMail.error ? ' (failed)' : ''}` : 'None since the last restart'}</b></div>
 ${lastErr ? html`<div class="fact"><span>Last email error</span><b class="warn-text">${lastErr.error.slice(0, 160)}</b></div>` : ''}
 <div class="fact"><span>Database</span><b>${mb(dbBytes)}</b></div>
@@ -120,7 +121,7 @@ ${disk ? html`<div class="fact"><span>Disk free</span><b class="${disk.free / di
 <form method="post" action="/admin/export" class="gap-s">${csrfField(ctx)}<button class="btn ghost">Export participants (CSV)</button></form></section>
 <form method="post" action="/admin/test-email" class="panel">${csrfField(ctx)}<h3>Test email</h3>
 <label class="fld"><span>Send a test to</span><input type="email" name="to" value="${ctx.user.email}" required></label>
-<button class="btn">Send test email</button>${!mail.configured() ? html`<p class="hint">Email isn’t set up, so this will only be written to the server log. Add RESEND_API_KEY and MAIL_FROM on Render.</p>` : ''}</form>
+<button class="btn">Send test email</button>${!mail.configured() ? html`<p class="hint">Email isn’t set up, so this will only be written to the server log. Set it up in <a href="/admin/settings">Settings</a>.</p>` : ''}</form>
 <section class="panel danger"><h3>Clean up</h3>
 <form method="post" action="/admin/signout-all">${csrfField(ctx)}<p class="muted">Sign out every login except you, on every device. Use it if you think an account was used by someone else.</p><button class="btn danger" data-confirm="Sign out everyone except you?">Sign out everyone else</button></form>
 ${people.tests ? html`<form method="post" action="/admin/delete-tests" class="gap">${csrfField(ctx)}<p class="muted">Delete all ${people.tests} test participant${people.tests === 1 ? '' : 's'}, with their answers and photos.</p><button class="btn danger" data-confirm="Delete all test participants and their data?">Delete test participants</button></form>` : ''}
@@ -378,6 +379,62 @@ ${u.role === 'participant' ? html`<form method="post" action="/admin/users/${u.i
     audit.log(db, ctx.user, 'delete', { id: null, name: u.name }, u.is_test ? 'test participant' : u.email);
     ctx.setFlash(`${u.name} was permanently deleted.`);
     ctx.redirect('/admin/users');
+  }, O);
+
+  // ---------------------------------------------------------------- Settings (email; payments later)
+  r.get('/admin/settings', (ctx) => {
+    const cfg = mail.config();
+    const savedKey = S.get(db, 'mail.resend_key');
+    const keyBroken = S.has(db, 'mail.resend_key') && !savedKey;
+    const from = S.get(db, 'mail.from_email') || '';
+    const env = process.env.RESEND_API_KEY || process.env.POSTMARK_TOKEN;
+    ctx.html(layout(ctx, { title: 'Settings', nav: 'admin', body: html`${pageHead('Settings', 'App settings for super admins. Changes take effect right away; nothing needs changing on Render.')}${tabs('settings')}
+<div class="cols">
+<form method="post" action="/admin/settings/email" class="panel" autocomplete="off">${csrfField(ctx)}<h3>${icon('notes')} Email (Resend)</h3>
+<p class="muted">Invites, new sign-in links, password resets and new-program emails go out through <a href="https://resend.com" target="_blank" rel="noopener">Resend</a>. Any domain you’ve verified in your Resend account works.</p>
+<p>${cfg.source === 'app' ? html`<span class="pill done">On · using these settings</span>` : cfg.source === 'render' && mail.configured() ? html`<span class="pill on">On · using Render’s settings</span> <span class="hint">Saving here takes over from them.</span>` : html`<span class="pill warn">Off</span> <span class="hint">Invite links are shown on screen to copy.</span>`}</p>
+${keyBroken ? html`<p class="flash err">The saved API key can’t be read any more (the server’s secret key changed). Enter it again.</p>` : ''}
+<label class="fld"><span>Resend API key ${savedKey ? html`<em>saved: ${S.hint(savedKey)}. Leave blank to keep it</em>` : html`<em>starts with re_</em>`}</span><input type="password" name="resend_key" placeholder="${savedKey ? 'Leave blank to keep the saved key' : 're_…'}" autocomplete="new-password" spellcheck="false"></label>
+<label class="fld"><span>Send from (email) <em>must be on a domain verified in Resend</em></span><input type="email" name="from_email" value="${from}" placeholder="hello@yourdomain.com"></label>
+<label class="fld"><span>Sender name</span><input name="from_name" value="${S.get(db, 'mail.from_name') || 'Life Audit 360'}" maxlength="60"></label>
+<label class="fld"><span>Replies go to <em>optional</em></span><input type="email" name="reply_to" value="${S.get(db, 'mail.reply_to') || ''}" placeholder="coach@yourdomain.com"></label>
+<label class="check"><input type="checkbox" name="send_test" value="1" checked> Send a test email to ${ctx.user.email} after saving</label>
+<p class="inline gap-s"><button class="btn primary">Save email settings</button>${savedKey || from ? html`<button class="btn ghost" name="clear" value="1" data-confirm="Remove the email settings saved here?${env ? ' Render’s settings will be used again.' : ' Email will be off.'}">Remove</button>` : ''}</p>
+<p class="hint">The API key is stored encrypted and never shown again. Database backups don’t include the key needed to read it.</p></form>
+<section class="panel"><h3>How to get the Resend details</h3><ol class="how">
+<li>Sign in at <a href="https://resend.com" target="_blank" rel="noopener">resend.com</a>.</li>
+<li><b>Domains → Add Domain</b>, add the DNS records it shows wherever that domain is managed, then <b>Verify</b>.</li>
+<li><b>API Keys → Create API Key</b> with “Sending access”, and paste it here.</li>
+<li>For “Send from”, use any address on that domain, e.g. <i>hello@yourdomain.com</i>.</li></ol>
+<h3 class="gap">${icon('cal')} Payments</h3><p class="muted">PayPal settings will go here.</p></section>
+</div>` }));
+  }, O);
+
+  r.post('/admin/settings/email', async (ctx) => {
+    const b = ctx.body;
+    if (b.clear) {
+      for (const k of ['mail.resend_key', 'mail.from_email', 'mail.from_name', 'mail.reply_to']) S.set(db, k, null);
+      audit.log(db, ctx.user, 'settings_email', null, 'removed the email settings');
+      ctx.setFlash('Email settings removed.');
+      return ctx.redirect('/admin/settings');
+    }
+    const keyIn = str(b.resend_key, 200);
+    const from = str(b.from_email).toLowerCase(); const replyTo = str(b.reply_to).toLowerCase();
+    const err = (m) => { ctx.setFlash(m, 'err'); ctx.redirect('/admin/settings'); };
+    if (keyIn && !/^re_[A-Za-z0-9_]{8,}$/.test(keyIn)) return err('That doesn’t look like a Resend API key. They start with re_.');
+    if (!keyIn && !S.get(db, 'mail.resend_key')) return err('Paste your Resend API key.');
+    if (!validEmail(from)) return err('Enter the email address to send from.');
+    if (replyTo && !validEmail(replyTo)) return err('The reply-to address doesn’t look right.');
+    if (keyIn) S.set(db, 'mail.resend_key', keyIn, { secret: true, by: ctx.user.id });
+    S.set(db, 'mail.from_email', from, { by: ctx.user.id });
+    S.set(db, 'mail.from_name', str(b.from_name, 60) || null, { by: ctx.user.id });
+    S.set(db, 'mail.reply_to', replyTo || null, { by: ctx.user.id });
+    audit.log(db, ctx.user, 'settings_email', null, `from ${from}${keyIn ? ', new API key' : ''}`);
+    if (!b.send_test) { ctx.setFlash('Email settings saved.'); return ctx.redirect('/admin/settings'); }
+    const ok = await mail.send({ to: ctx.user.email, subject: 'Life Audit 360: email is working', text: `This test was sent from Life Audit 360 (${baseUrl(ctx)}) after the email settings were saved.\n\nInvites and sign-in links will now come from ${from}.` });
+    const entry = mail.sentLog[mail.sentLog.length - 1];
+    ctx.setFlash(ok ? `Saved, and a test email was sent to ${ctx.user.email}. Check the inbox (and spam).` : `Saved, but the test email failed: ${(entry && entry.error) || 'unknown error'}`, ok ? 'ok' : 'err');
+    ctx.redirect('/admin/settings');
   }, O);
 
   // ---------------------------------------------------------------- Activity log
