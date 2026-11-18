@@ -112,6 +112,13 @@ function seed(db, headId) {
     ['prompt', 'nutrition.ratings.water', 'Water with every meal', 'Drink one full glass of water before each meal this week. Tick it off in your daily log.', null],
   ];
   items.forEach(([kind, challenge, title, description, day], i) => db.insert('videos', { kind, challenge, area: challenge.split('.')[0], title, description, day, url: '', sort: 20 + i, created_at: now() }));
+  // Sample store: a program and a few add-ons
+  [
+    ['program', '14-Day Life Audit', 'The full 14-day program: a week of honest tracking, your analysis, then a week of coaching on your top priorities.', 'one_time', 19700, 7, null, null],
+    ['addon', 'Coaching Club', 'A monthly group call, new videos every week, and a community of people doing the work.', 'monthly', 2900, 7, 'Welcome to the Club! Calls are every Tuesday at 6 PM Pacific. The link and replays are below.', 'https://example.com/club'],
+    ['addon', '30-Day Meal Plan', 'Simple, realistic meals and a shopping list for each week.', 'one_time', 3900, 0, 'Your plan is ready. Start with Week 1 and the shopping list.', 'https://example.com/meal-plan'],
+    ['addon', 'Sleep Reset Guide', 'A short guide to better sleep in seven nights.', 'free', 0, 0, 'Night 1: pick a fixed wake-up time and keep it all week.', null],
+  ].forEach(([kind, name, description, fee, price, trial, unlockText, unlockUrl], i) => db.insert('products', { kind, name, description, fee, price_cents: price, trial_days: trial, unlock_text: unlockText, unlock_url: unlockUrl, sort: i, created_at: now() }));
   return logins;
 }
 

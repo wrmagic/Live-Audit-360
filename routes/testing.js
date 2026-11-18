@@ -67,7 +67,7 @@ module.exports = (r, { db, photoDir }) => {
     const today = P.todayIn(p.timezone);
     let filled = 0;
     db.tx(() => {
-      db.run('UPDATE enrollments SET start_date=? WHERE id=?', P.addDays(today, -(day - 1)), e.id);
+      { db.run('UPDATE enrollments SET start_date=? WHERE id=?', P.addDays(today, -(day - 1)), e.id); require('../lib/store').syncTrial(db, e.id); }
       if (ctx.body.fill) {
         // Each test participant gets their own pattern of challenges, a bit easier in Week 2
         const bias = Object.fromEntries(F.AREAS.map((a) => [a.key, 1.5 + Math.random() * 3.3]));
@@ -98,7 +98,7 @@ module.exports = (r, { db, photoDir }) => {
     db.tx(() => {
       for (const t of ['responses', 'photos', 'video_views']) db.run(`DELETE FROM ${t} WHERE enrollment_id=?`, e.id);
       db.run('DELETE FROM priorities WHERE enrollment_id=?', e.id);
-      db.run('UPDATE enrollments SET start_date=? WHERE id=?', P.todayIn(p.timezone), e.id);
+      { db.run('UPDATE enrollments SET start_date=? WHERE id=?', P.todayIn(p.timezone), e.id); require('../lib/store').syncTrial(db, e.id); }
     });
     ctx.setFlash(`Cleared. ${p.name} starts again at Day 1 today.`);
     ctx.redirect(`/participants/${p.id}`);

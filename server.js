@@ -7,7 +7,7 @@ const auth = require('./lib/auth');
 const { html } = require('./lib/html');
 const { head } = require('./lib/views');
 
-const ROUTES = ['auth', 'participant', 'photos', 'testing', 'coach', 'coaches', 'videos', 'admin', 'settings'];
+const ROUTES = ['auth', 'participant', 'photos', 'testing', 'coach', 'coaches', 'videos', 'admin', 'settings', 'store', 'adminstore'];
 
 function createApp({ dbFile = process.env.DATABASE_FILE || path.join(__dirname, 'data', 'la360.db') } = {}) {
   const db = open(dbFile);
@@ -54,6 +54,17 @@ function createApp({ dbFile = process.env.DATABASE_FILE || path.join(__dirname, 
         throw new HttpError(403, 'That page is for coaches.');
       }
       if (route.opts.head && role !== 'head') throw new HttpError(403, 'Only the head coach can do that.');
+      // A program with a fee that isn't paid (or whose free week is over): the app opens on the payment page
+      if (role === 'participant' && route.opts.participant && /^\/m(\/|$)/.test(url.pathname) && !/^\/m\/(pay|checkout|me|store|purchases)(\/|$)/.test(url.pathname)) {
+        const P = require('./lib/program'); const ST = require('./lib/store');
+        const e = P.currentEnrollment(db, ctx.user.id);
+        let pu = e && ST.forEnrollment(db, e.id);
+        if (pu && pu.fee === 'monthly') pu = await ST.refresh(db, require('./lib/paypal').config(db), pu);
+        if (pu && !ST.hasAccess(pu, P.todayIn(ctx.user.timezone))) {
+          if (req.method === 'GET') return ctx.redirect('/m/pay');
+          throw new HttpError(402, 'Your program needs to be paid for first.');
+        }
+      }
       if (route.opts.super && !ctx.user.is_super) {
         if (req.method === 'GET') throw new HttpError(403, 'Only super admins can open the Admin area.');
         throw new HttpError(403, 'Only super admins can do that.');

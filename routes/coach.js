@@ -7,6 +7,7 @@ const F = require('../lib/forms');
 const P = require('../lib/program');
 const R = require('../lib/report');
 const Pr = require('../lib/priorities');
+const ST = require('../lib/store');
 const { participantFor, sendInvite, currentLink, baseUrl, str, validEmail, ZONES } = require('../lib/site');
 
 const O = { coach: true };
@@ -58,6 +59,42 @@ function tzSelect(name, value) {
 }
 
 module.exports = (r, { db }) => {
+  const programs = () => db.all("SELECT * FROM products WHERE kind='program' AND active=1 ORDER BY sort, id");
+  function programSelect(selected, compact = false) {
+    const list = programs();
+    const opts = html`<option value="">No charge (free)</option>${list.map((p) => html`<option value="${p.id}"${String(selected || '') === String(p.id) ? raw(' selected') : ''}>${p.name} · ${ST.priceLabel(p)}</option>`)}`;
+    if (compact) return html`<select name="product_id" title="Program and price">${opts}</select>`;
+    return html`<label class="fld"><span>Program and price</span><select name="product_id">${opts}</select>${list.length ? '' : html`<span class="hint">Super admins add programs and prices in Admin → Store.</span>`}</label>`;
+  }
+  function pickProgram(id) {
+    if (!id) return null;
+    const p = db.get("SELECT * FROM products WHERE id=? AND kind='program' AND active=1", Number(id));
+    if (!p) throw new HttpError(400, 'That program isn’t available.');
+    return p;
+  }
+  function payBadge(s) {
+    const pu = s.e && ST.forEnrollment(db, s.e.id);
+    if (!pu) return '';
+    const today = P.todayIn(s.p.timezone);
+    if (['paid', 'active'].includes(pu.status)) return html` <span class="pill done" title="${pu.name}">Paid</span>`;
+    if (['free', 'comped'].includes(pu.status)) return html` <span class="pill" title="${pu.name}">Free</span>`;
+    if (pu.status === 'trial' && ST.hasAccess(pu, today)) return html` <span class="pill on" title="Free trial until ${pu.trial_ends}">Trial</span>`;
+    if (ST.hasAccess(pu, today)) return '';
+    return html` <span class="pill warn" title="${pu.name} · ${ST.priceLabel(pu, { trial: false })}">Payment due</span>`;
+  }
+  function purchasesPanel(ctx, s) {
+    const list = db.all('SELECT * FROM purchases WHERE user_id=? ORDER BY id DESC', s.p.id);
+    const addons = db.all("SELECT * FROM products WHERE kind='addon' AND active=1 ORDER BY sort, id");
+    const today = P.todayIn(s.p.timezone);
+    return html`<section class="panel"><h3>${icon('cal')} Program and purchases</h3>
+${list.length ? html`<table class="list"><tbody>${list.map((pu) => html`<tr><td><b>${pu.name}</b><small>${pu.enrollment_id ? (s.e && pu.enrollment_id === s.e.id ? 'Current program' : 'Earlier program') : 'Add-on'} · ${pu.fee === 'free' ? 'Free' : ST.priceLabel(pu, { trial: false })}</small></td>
+<td><span class="pill ${ST.hasAccess(pu, today) ? (pu.status === 'trial' ? 'on' : 'done') : 'warn'}">${ST.STATUS[pu.status] || pu.status}${pu.status === 'trial' && pu.trial_ends ? ` until ${dateFmt(pu.trial_ends.slice(0, 10))}` : ''}</span>${pu.note ? html`<small>${pu.note}</small>` : ''}</td>
+<td class="actions">${!['paid', 'active', 'free', 'comped'].includes(pu.status) ? html`<form method="post" action="/participants/${s.p.id}/purchases/${pu.id}">${csrfField(ctx)}<button class="link" name="do" value="comp">Give free</button> <button class="link" name="do" value="paid" data-confirm="Mark ${pu.name} as paid outside the app (cash, Venmo…)?">Mark paid</button></form>` : ''}
+${ST.hasAccess(pu, today) && pu.status !== 'active' ? html`<form method="post" action="/participants/${s.p.id}/purchases/${pu.id}">${csrfField(ctx)}<button class="link danger" name="do" value="end" data-confirm="End access to ${pu.name}?">End access</button></form>` : ''}</td></tr>`)}</tbody></table>`
+    : html`<p class="muted">${s.e ? 'No charge for this program.' : 'Nothing yet.'}</p>`}
+${addons.length ? html`<form method="post" action="/participants/${s.p.id}/give" class="inline gap-s">${csrfField(ctx)}<select name="product_id">${addons.map((a) => html`<option value="${a.id}">${a.name}</option>`)}</select><button class="btn small">Give free</button></form>` : ''}</section>`;
+  }
+
   // ---------------------------------------------------------------- Participants list
   r.get('/participants', (ctx) => {
     const head = ctx.user.role === 'head';
@@ -92,7 +129,7 @@ ${list.map((s) => {
     const w = s.report ? s.report[s.week === 2 ? 'w2' : 'w1'] : null;
     return html`<tr class="${s.idle ? 'idle' : ''}" data-href="/participants/${s.p.id}"><td><a href="/participants/${s.p.id}"><b>${s.p.name}</b></a>${s.p.is_test ? html` <span class="pill test">Test</span>` : html`<small>${s.p.email}</small>${inviteNote(ctx, s.p, ctx.url.pathname + ctx.url.search)}`}</td>
 ${head ? html`<td>${s.p.coach_name || '—'}</td>` : ''}
-<td>${stateLabel(s)}</td><td>${todayMarks(s)}</td>
+<td>${stateLabel(s)}${payBadge(s)}</td><td>${todayMarks(s)}</td>
 <td>${s.pos && s.pos.started ? html`<span class="meter"><span style="width:${s.completion.pct}%"></span></span> ${s.completion.done}/${s.completion.of}` : '—'}</td>
 <td>${s.report && s.report.pri.isConfirmed ? html`<span class="chips-s">${s.report.pri.confirmed.length ? s.report.pri.confirmed.map((k, i) => html`<span class="pill on" title="Priority ${i + 1}">${i + 1}. ${F.AREA[k].short}</span>`) : html`<span class="muted">No priorities</span>`}</span>`
   : s.pos && s.pos.day >= 7 && s.report && s.report.pri.ranking.complete ? html`<span class="pill warn">Priorities not confirmed</span>`
@@ -111,6 +148,7 @@ ${error ? html`<p class="flash err">${error}</p>` : ''}
 <label class="fld"><span>Email</span><input type="email" name="email" value="${v.email || ''}" required maxlength="200"></label>
 <label class="fld"><span>Mobile phone <em>optional</em></span><input type="tel" name="phone" value="${v.phone || ''}" maxlength="40"></label>
 <label class="fld"><span>Day 1 is</span><input type="date" name="start_date" value="${v.start_date || P.todayIn(ctx.user.timezone)}" required></label>
+${programSelect(v.product_id)}
 ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select name="coach_id">${coachOptions(db, Number(v.coach_id) || ctx.user.id)}</select></label>` : ''}
 <label class="fld"><span>Their time zone</span>${tzSelect('timezone', v.timezone || ctx.user.timezone)}</label>
 <p class="hint span2">Day 1 can be today. They’ll get a link to choose a password. On Day 1 the app shows their first daily audit. Each day changes over at midnight in their time zone.</p>
@@ -120,7 +158,8 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
   r.get('/participants/new', (ctx) => ctx.html(inviteForm(ctx)), O);
   r.post('/participants/new', async (ctx) => {
     const b = ctx.body;
-    const v = { name: str(b.name, 100), email: str(b.email).toLowerCase(), phone: str(b.phone, 40), start_date: str(b.start_date, 10), coach_id: b.coach_id, timezone: str(b.timezone, 60) };
+    const v = { name: str(b.name, 100), email: str(b.email).toLowerCase(), phone: str(b.phone, 40), start_date: str(b.start_date, 10), coach_id: b.coach_id, timezone: str(b.timezone, 60), product_id: b.product_id };
+    const program = pickProgram(b.product_id);
     if (!v.name) return ctx.html(inviteForm(ctx, v, 'Enter their name.'), 400);
     if (!validEmail(v.email)) return ctx.html(inviteForm(ctx, v, 'That email address doesn’t look right.'), 400);
     if (!P.isDate(v.start_date)) return ctx.html(inviteForm(ctx, v, 'Choose the date of Day 1.'), 400);
@@ -135,7 +174,8 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
     const now = new Date().toISOString();
     const id = db.tx(() => {
       const uid = db.insert('users', { role: 'participant', name: v.name, email: v.email, phone: v.phone || null, coach_id: coachId, timezone: v.timezone, created_at: now });
-      db.insert('enrollments', { user_id: uid, start_date: v.start_date, created_at: now });
+      const eid = db.insert('enrollments', { user_id: uid, start_date: v.start_date, created_at: now });
+      ST.assignProgram(db, { id: uid }, { id: eid, start_date: v.start_date }, program, ctx.user);
       return uid;
     });
     const u = db.get('SELECT * FROM users WHERE id=?', id);
@@ -169,7 +209,7 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
     ctx.html(layout(ctx, { title: p.name, nav: 'people', body: html`
 <div class="page-head person"><div><p class="eyebrow"><a href="/participants">Participants</a></p><h1>${p.name}</h1>
 <p class="muted">${p.is_test ? html`<span class="pill test">Test participant</span> ` : p.email}${p.phone ? html` · <a href="tel:${p.phone}">${p.phone}</a>` : ''}${coach ? html` · Coach: ${coach.name}` : ''}</p>${p.is_test ? '' : inviteNote(ctx, p, `/participants/${p.id}`)}</div>
-<div class="head-state">${stateLabel(s)}${s.e ? html`<small>${dateFmt(s.e.start_date)} – ${dateFmt(s.pos.endDate)}</small>` : ''}
+<div class="head-state">${stateLabel(s)}${payBadge(s)}${s.e ? html`<small>${dateFmt(s.e.start_date)} – ${dateFmt(s.pos.endDate)}</small>` : ''}
 ${s.e && !s.pos.started ? html`<form method="post" action="/participants/${p.id}/start-today">${csrfField(ctx)}<button class="btn small primary">Start today</button></form>` : ''}</div></div>
 ${s.e ? html`<div class="person-strip">${dayStrip(s.map, s.pos, { link: (d) => `${base}?tab=day&day=${d}` })}<div class="person-stats"><span><b>${s.completion.done}</b>/${s.completion.of} days complete</span><span><b>${P.streak(s.map, s.pos)}</b> day streak</span><span>Last entry <b>${s.lastEntry ? dateTimeFmt(s.lastEntry, ctx.user.timezone) : 'none yet'}</b></span></div></div>` : ''}
 <nav class="tabs">${tabs.map(([k, l]) => html`<a href="${base}?tab=${k}" class="${tab === k ? 'on' : ''}">${l}</a>`)}</nav>
@@ -244,9 +284,10 @@ ${ctx.user.role === 'head' ? html`<label class="fld"><span>Coach</span><select n
 ${s.e ? html`<label class="fld"><span>Day 1 of this program</span><input type="date" name="start_date" value="${s.e.start_date}"></label>` : ''}
 <div class="span2"><button class="btn primary">Save</button></div></form>
 <div>
+${purchasesPanel(ctx, s)}
 ${linkPanel(ctx, p)}
 <section class="panel"><h3>Start another 14 days</h3><p class="muted">Starts a fresh program on the date you pick (today works) and sends them a new sign-in link. The earlier program is kept on record.</p>
-<form method="post" action="/participants/${p.id}/restart" class="inline">${csrfField(ctx)}<input type="date" name="start_date" value="${P.todayIn(p.timezone)}" required> <button class="btn" data-confirm="Start a new 14-day program for ${p.name}?">Start new program</button></form>
+<form method="post" action="/participants/${p.id}/restart" class="inline">${csrfField(ctx)}<input type="date" name="start_date" value="${P.todayIn(p.timezone)}" required> ${programSelect(null, true)} <button class="btn" data-confirm="Start a new 14-day program for ${p.name}?">Start new program</button></form>
 ${pastPrograms(ctx, p)}</section>
 <section class="panel danger"><h3>Remove</h3><p class="muted">They can’t sign in any more and disappear from your list. Their answers are kept.</p>
 <form method="post" action="/participants/${p.id}/deactivate">${csrfField(ctx)}<button class="btn danger" data-confirm="Remove ${p.name}? They won’t be able to sign in.">Remove participant</button></form></section>
@@ -314,7 +355,7 @@ ${link ? html`<p class="muted">${p.password_hash ? 'This link signs them straigh
     }
     db.update('users', p.id, upd);
     const e = P.currentEnrollment(db, p.id);
-    if (e && P.isDate(b.start_date) && b.start_date !== e.start_date) db.run('UPDATE enrollments SET start_date=? WHERE id=?', b.start_date, e.id);
+    if (e && P.isDate(b.start_date) && b.start_date !== e.start_date) { db.run('UPDATE enrollments SET start_date=? WHERE id=?', b.start_date, e.id); require('../lib/store').syncTrial(db, e.id); }
     ctx.setFlash('Saved.');
     ctx.redirect(upd.coach_id && upd.coach_id !== p.coach_id && ctx.user.role !== 'head' ? '/participants' : `/participants/${p.id}?tab=settings`);
   }, O);
@@ -336,15 +377,43 @@ ${link ? html`<p class="muted">${p.password_hash ? 'This link signs them straigh
     const e = P.currentEnrollment(db, p.id);
     const today = P.todayIn(p.timezone);
     if (!e) throw new HttpError(400, 'No program.');
-    if (e.start_date > today) db.run('UPDATE enrollments SET start_date=? WHERE id=?', today, e.id);
+    if (e.start_date > today) { db.run('UPDATE enrollments SET start_date=? WHERE id=?', today, e.id); require('../lib/store').syncTrial(db, e.id); }
     ctx.setFlash(`${firstName(p.name)}’s program starts today. Day 1 is open in their app.`);
     ctx.redirect(`/participants/${p.id}`);
+  }, O);
+
+  // Coaches: give something free, mark it paid outside the app, or end access
+  r.post('/participants/:id/purchases/:pid', (ctx) => {
+    const p = participantFor(ctx, ctx.params.id);
+    const pu = db.get('SELECT * FROM purchases WHERE id=? AND user_id=?', Number(ctx.params.pid), p.id);
+    if (!pu) throw new HttpError(404, 'That purchase wasn’t found.');
+    const what = ctx.body.do;
+    const t = new Date().toISOString();
+    if (what === 'comp') ST.update(db, pu.id, { status: 'comped', note: `Given free by ${ctx.user.name}`, paid_at: t });
+    else if (what === 'paid') ST.update(db, pu.id, { status: 'paid', note: `Marked paid by ${ctx.user.name}`, paid_at: t });
+    else if (what === 'end') ST.update(db, pu.id, { status: 'expired', trial_ends: null, paid_through: null, note: `Ended by ${ctx.user.name}` });
+    else throw new HttpError(400, 'Unknown action.');
+    require('../lib/audit').log(db, ctx.user, 'purchase', p, `${pu.name}: ${{ comp: 'given free', paid: 'marked paid', end: 'access ended' }[what]}`);
+    ctx.setFlash({ comp: `${pu.name} is now free for ${firstName(p.name)}.`, paid: `${pu.name} marked as paid.`, end: `${firstName(p.name)} no longer has ${pu.name}.` }[what]);
+    ctx.redirect(`/participants/${p.id}?tab=settings`);
+  }, O);
+
+  r.post('/participants/:id/give', (ctx) => {
+    const p = participantFor(ctx, ctx.params.id);
+    const prod = db.get("SELECT * FROM products WHERE id=? AND kind='addon'", Number(ctx.body.product_id));
+    if (!prod) throw new HttpError(404, 'That add-on wasn’t found.');
+    ST.insert(db, { user_id: p.id, product_id: prod.id, name: prod.name, fee: prod.fee, amount_cents: 0, currency: prod.currency, status: 'comped', note: `Given free by ${ctx.user.name}`, paid_at: new Date().toISOString(), created_by: ctx.user.id });
+    require('../lib/audit').log(db, ctx.user, 'purchase', p, `${prod.name}: given free`);
+    ctx.setFlash(`${firstName(p.name)} now has ${prod.name}, free.`);
+    ctx.redirect(`/participants/${p.id}?tab=settings`);
   }, O);
 
   r.post('/participants/:id/restart', async (ctx) => {
     const p = participantFor(ctx, ctx.params.id);
     if (!P.isDate(ctx.body.start_date)) throw new HttpError(400, 'Choose the date of Day 1.');
-    db.insert('enrollments', { user_id: p.id, start_date: ctx.body.start_date, created_at: new Date().toISOString() });
+    const program = pickProgram(ctx.body.product_id);
+    const eid = db.insert('enrollments', { user_id: p.id, start_date: ctx.body.start_date, created_at: new Date().toISOString() });
+    ST.assignProgram(db, p, { id: eid, start_date: ctx.body.start_date }, program, ctx.user);
     const { link, emailed } = await sendInvite(ctx, p, { programStart: ctx.body.start_date });
     ctx.html(layout(ctx, { title: 'New program', nav: 'people', body: html`<div class="page-head"><div><p class="eyebrow"><a href="/participants/${p.id}">${p.name}</a></p><h1>New program set up</h1></div></div>
 <section class="panel invite-done"><p>Day 1 is <b>${dateFmt(ctx.body.start_date, 'long')}</b>. ${emailed ? html`We emailed ${firstName(p.name)} a new sign-in link. You can also send it yourself:` : html`Send ${firstName(p.name)} this new sign-in link:`}</p>

@@ -561,3 +561,144 @@ test('Admin settings: email set in the app, stored encrypted, super admins only'
   assert.equal(mail.configured(), false);
   assert.ok(db.all('SELECT action FROM admin_log').some((r) => r.action === 'settings_email'));
 });
+
+// ---------------------------------------------------------------- Store and PayPal (PayPal simulated)
+function fakePayPal() {
+  const st = { orders: {}, subs: {}, calls: [], tamper: false };
+  let n = 0;
+  const res = (status, body) => ({ ok: status < 300, status, json: async () => body });
+  const fn = async (url, opts = {}) => {
+    const u = new URL(url); const body = opts.body && opts.body[0] === '{' ? JSON.parse(opts.body) : null;
+    st.calls.push(`${opts.method || 'GET'} ${u.pathname}`);
+    if (u.pathname === '/v1/oauth2/token') return res(200, { access_token: 'tok', expires_in: 3600 });
+    if (u.pathname === '/v2/checkout/orders') { const id = `ORDER${++n}`; st.orders[id] = body.purchase_units[0]; return res(201, { id, status: 'CREATED' }); }
+    const cap = /^\/v2\/checkout\/orders\/(\w+)\/capture$/.exec(u.pathname);
+    if (cap) {
+      const o = st.orders[cap[1]];
+      const value = st.tamper ? '1.00' : o.amount.value;
+      return res(201, { status: 'COMPLETED', payer: { email_address: 'buyer@pp.test' }, purchase_units: [{ reference_id: o.reference_id, payments: { captures: [{ id: `CAP-${cap[1]}`, status: 'COMPLETED', amount: { currency_code: o.amount.currency_code, value } }] } }] });
+    }
+    if (u.pathname === '/v1/catalogs/products') return res(201, { id: 'PROD-1' });
+    if (u.pathname === '/v1/billing/plans') { st.plan = body; return res(201, { id: 'PLAN-1' }); }
+    const sub = /^\/v1\/billing\/subscriptions\/([\w-]+)(\/cancel)?$/.exec(u.pathname);
+    if (sub && sub[2]) { st.subs[sub[1]].status = 'CANCELLED'; return { ok: true, status: 204, json: async () => { throw new Error('no body'); } }; }
+    if (sub) return res(200, { status: st.subs[sub[1]].status, plan_id: 'PLAN-1', custom_id: st.subs[sub[1]].custom, billing_info: { next_billing_time: new Date(Date.now() + 30 * 864e5).toISOString() }, subscriber: { email_address: 'sub@pp.test' } });
+    return res(404, { name: 'NOT_FOUND' });
+  };
+  return { st, fn };
+}
+
+test('Store: programs and add-ons, PayPal checkout, trials, subscriptions, free and coach actions', async (t) => {
+  const { server, db, base } = await setup();
+  t.after(() => server.close());
+  const PP = require('../lib/paypal');
+  const pp = fakePayPal();
+  PP.setFetch(pp.fn);
+  t.after(() => PP.setFetch((...a) => fetch(...a)));
+  const admin = client(base);
+  await admin.login('head@x.test');
+  const today = P.todayIn('America/Los_Angeles');
+
+  // Admin: connect PayPal (sandbox) and make the store
+  await admin.post('/admin/settings/paypal', { mode: 'sandbox', client_id: 'AbcDEF1234567890ghijklmnop', secret: 'shh-secret' });
+  assert.equal(PP.config(db).ready, true);
+  assert.ok(!db.get("SELECT value FROM settings WHERE key='paypal.secret'").value.includes('shh'), 'secret encrypted');
+  const mk = async (fields) => { const r = await admin.post('/admin/store', { active: '1', currency: 'USD', ...fields }); return Number(/edit=(\d+)/.exec(r.location)[1]); };
+  assert.equal((await admin.post('/admin/store', { kind: 'program', name: 'Bad', fee: 'one_time', price: '0' })).status, 400, 'paid items need a price');
+  const prog = await mk({ kind: 'program', name: '14-Day Audit', fee: 'one_time', price: '197' });
+  const progTrial = await mk({ kind: 'program', name: 'Audit with free week', fee: 'one_time', price: '149', trial: '1' });
+  const monthly = await mk({ kind: 'addon', name: 'Coaching Club', fee: 'monthly', price: '29', trial: '1', unlock_text: 'Welcome to the club', unlock_url: 'https://club.test/' });
+  const freebie = await mk({ kind: 'addon', name: 'Meal Plan', fee: 'free', unlock_text: 'Here is your plan' });
+  const trialAddon = await mk({ kind: 'addon', name: 'Sleep Course', fee: 'one_time', price: '39', trial: '1', unlock_text: 'Lesson 1' });
+
+  // 1. Program with a price: invite → password → payment page → PayPal → Day 1
+  await admin.post('/participants/new', { name: 'Paula Pay', email: 'paula@x.test', start_date: today, timezone: 'America/Los_Angeles', product_id: String(prog) });
+  const paula = db.get("SELECT * FROM users WHERE email='paula@x.test'");
+  assert.match(require('../lib/mail').sentLog.at(-1).text, /\$197/, 'the invite email mentions the price');
+  const pc = client(base);
+  await pc.post(`/invite/${paula.invite_token}`, { password: 'paulapassword', password2: 'paulapassword' });
+  assert.equal((await pc.get('/m')).location, '/m/pay', 'the app opens on payment');
+  const pu = db.get('SELECT * FROM purchases WHERE user_id=?', paula.id);
+  assert.equal((await pc.get('/m/pay')).location, `/m/checkout/${pu.id}`);
+  const co = await pc.get(`/m/checkout/${pu.id}`);
+  assert.match(co.text, /paypal\.com\/sdk\/js\?client-id=AbcDEF/);
+  assert.match(co.text, /intent=capture/);
+  assert.equal((await pc.post(`/m/day/1/day1`, {}, { 'x-autosave': '1' })).status, 402, 'no answers until paid');
+  const start = await pc.raw(`/m/checkout/${pu.id}/start`, Buffer.from('{}'));
+  assert.equal(start.status, 200);
+  assert.equal(pp.st.orders[start.json.id].amount.value, '197.00', 'the price comes from the server');
+  assert.equal((await pc.raw(`/m/checkout/${pu.id}/finish`, Buffer.from(JSON.stringify({ orderID: 'ORDER999' })))).status, 400, 'someone else’s order is refused');
+  pp.st.tamper = true;
+  const bad = await pc.raw(`/m/checkout/${pu.id}/finish`, Buffer.from(JSON.stringify({ orderID: start.json.id })));
+  assert.equal(bad.status, 400, 'an amount that doesn’t match is refused');
+  assert.equal(db.get('SELECT status FROM purchases WHERE id=?', pu.id).status, 'pending');
+  pp.st.tamper = false;
+  const s2 = await pc.raw(`/m/checkout/${pu.id}/start`, Buffer.from('{}'));
+  assert.equal((await pc.raw(`/m/checkout/${pu.id}/finish`, Buffer.from(JSON.stringify({ orderID: s2.json.id })))).status, 200);
+  const paid = db.get('SELECT * FROM purchases WHERE id=?', pu.id);
+  assert.equal(paid.status, 'paid');
+  assert.equal(paid.payer_email, 'buyer@pp.test');
+  assert.equal((await pc.get('/m')).status, 200, 'Day 1 opens');
+
+  // 2. Program with a free week: Days 1-7 open, Day 8 needs payment
+  await admin.post('/participants/new', { name: 'Tina Trial', email: 'tina@x.test', start_date: P.addDays(today, -6), timezone: 'America/Los_Angeles', product_id: String(progTrial) });
+  const tina = db.get("SELECT * FROM users WHERE email='tina@x.test'");
+  const tc = client(base);
+  await tc.post(`/invite/${tina.invite_token}`, { password: 'tinapassword', password2: 'tinapassword' });
+  assert.equal((await tc.get('/m')).status, 200, 'Day 7 is still free');
+  const te = P.currentEnrollment(db, tina.id);
+  db.run('UPDATE enrollments SET start_date=? WHERE id=?', P.addDays(today, -7), te.id);
+  require('../lib/store').syncTrial(db, te.id);
+  assert.equal((await tc.get('/m')).location, '/m/pay', 'Day 8: pay to unlock Week 2');
+  assert.match((await tc.get(`/m/checkout/${require('../lib/store').forEnrollment(db, te.id).id}`)).text, /Your free week is over/);
+
+  // 3. No charge
+  await admin.post('/participants/new', { name: 'Fran Free', email: 'fran@x.test', start_date: today, timezone: 'America/Los_Angeles', product_id: '' });
+  const fran = db.get("SELECT * FROM users WHERE email='fran@x.test'");
+  assert.equal(db.get('SELECT COUNT(*) n FROM purchases WHERE user_id=?', fran.id).n, 0);
+  const fc = client(base);
+  await fc.post(`/invite/${fran.invite_token}`, { password: 'franpassword', password2: 'franpassword' });
+  assert.equal((await fc.get('/m')).status, 200);
+
+  // 4. Store: free, one-time trial, monthly subscription with trial, cancel
+  const store = await fc.get('/m/store');
+  for (const name of ['Coaching Club', 'Meal Plan', 'Sleep Course']) assert.match(store.text, new RegExp(name));
+  assert.doesNotMatch(store.text, /14-Day Audit/, 'programs aren’t sold in the store');
+  await fc.post(`/m/store/${freebie}/get`);
+  assert.match((await fc.get(`/m/store/${freebie}`)).text, /Here is your plan/);
+  await fc.post(`/m/store/${trialAddon}/get`);
+  const trialPage = (await fc.get(`/m/store/${trialAddon}`)).text;
+  assert.match(trialPage, /Lesson 1/);
+  assert.match(trialPage, /Free trial until/);
+  const sub = await fc.post(`/m/store/${monthly}/get`);
+  const subPu = Number(/\/m\/checkout\/(\d+)/.exec(sub.location)[1]);
+  assert.match((await fc.get(`/m/checkout/${subPu}`)).text, /vault=true&amp;intent=subscription/);
+  const s3 = await fc.raw(`/m/checkout/${subPu}/start`, Buffer.from('{}'));
+  assert.deepEqual(s3.json, { planId: 'PLAN-1', customId: `p${subPu}` });
+  assert.equal(pp.st.plan.billing_cycles[0].tenure_type, 'TRIAL', 'PayPal plan has the 7-day trial');
+  assert.equal(pp.st.plan.billing_cycles[1].pricing_scheme.fixed_price.value, '29.00');
+  pp.st.subs['SUB-1'] = { status: 'ACTIVE', custom: 'p999' };
+  assert.equal((await fc.raw(`/m/checkout/${subPu}/finish`, Buffer.from(JSON.stringify({ subscriptionID: 'SUB-1' })))).status, 400, 'a subscription for someone else is refused');
+  pp.st.subs['SUB-1'].custom = `p${subPu}`;
+  assert.equal((await fc.raw(`/m/checkout/${subPu}/finish`, Buffer.from(JSON.stringify({ subscriptionID: 'SUB-1' })))).status, 200);
+  const club = (await fc.get(`/m/store/${monthly}`)).text;
+  assert.match(club, /Welcome to the club/);
+  assert.match(club, /Cancel subscription/);
+  await fc.post(`/m/purchases/${subPu}/cancel`);
+  assert.equal(db.get('SELECT status FROM purchases WHERE id=?', subPu).status, 'cancelled');
+  assert.match((await fc.get(`/m/store/${monthly}`)).text, /yours until/, 'access lasts to the end of the paid month');
+
+  // 5. Coaches: give free, mark paid, end access
+  const tinaPu = require('../lib/store').forEnrollment(db, te.id);
+  await admin.post(`/participants/${tina.id}/purchases/${tinaPu.id}`, { do: 'comp' });
+  assert.equal((await tc.get('/m')).status, 200, 'given free: Week 2 opens');
+  await admin.post(`/participants/${fran.id}/give`, { product_id: String(trialAddon) });
+  assert.ok(db.get("SELECT 1 FROM purchases WHERE user_id=? AND product_id=? AND status='comped'", fran.id, trialAddon));
+  await admin.post(`/participants/${paula.id}/purchases/${pu.id}`, { do: 'end' });
+  assert.equal((await pc.get('/m')).location, '/m/pay');
+  assert.match((await admin.get('/admin/store')).text, /Paula Pay/, 'purchases list');
+  // Coaches who aren't super admins can't manage the store
+  const other = client(base);
+  await other.login('other@x.test');
+  assert.equal((await other.get('/admin/store')).status, 403);
+});

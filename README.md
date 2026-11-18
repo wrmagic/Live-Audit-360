@@ -114,3 +114,17 @@ routes/coaches.js    coaching team     routes/auth.js    sign-in, invite links
 public/              styles, scripts, icons, header images
 scripts/setup.js     first-start setup (and --demo sample data)
 ```
+
+## Store and payments (PayPal)
+
+Super admins set this up in **Admin**:
+
+- **Settings → Payments (PayPal):** paste the Client ID and Secret from developer.paypal.com → Apps & Credentials. Start in **Sandbox** (test payments with PayPal's test accounts), then switch to **Live**. Sandbox and Live each have their own Client ID and Secret.
+- **Store:** add **programs** (coaches pick one when inviting, or "No charge") and **add-ons** (participants buy them in the app's **Store** tab). Each item has a picture, a description, a fee (**One-time**, **Monthly** or **Free forever**) and an optional **7-day free trial**. For add-ons, also write what the buyer gets once it's theirs: a message, a link, or both.
+
+How the trial works:
+
+- **One-time with a trial:** 7 days of access with no payment details. For a program, that's Week 1, and they pay to unlock Week 2.
+- **Monthly with a trial:** they approve the PayPal subscription up front and are first charged after 7 days. They can cancel in the app and keep access until the end of the month they paid for.
+
+Payments go through PayPal's own buttons, so people can pay with a PayPal account or a card. The server sets every price and checks the amount PayPal actually collected before giving access. Coaches can give any program or add-on free, mark something paid outside the app, or end access, all from the person's **Settings** tab. Refunds are made in PayPal.

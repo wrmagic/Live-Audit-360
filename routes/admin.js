@@ -27,7 +27,7 @@ const STARTED = Date.now();
 const ACTIONS = {
   login_as: 'Signed in as', preview: 'Previewed', set_password: 'Set password for', send_link: 'Sent a sign-in link to',
   signout: 'Signed out everywhere', unlock: 'Unlocked sign-in for', edit: 'Edited', deactivate: 'Turned off', reactivate: 'Turned back on',
-  delete: 'Permanently deleted', backup: 'Downloaded a database backup', export: 'Exported participants', test_email: 'Sent a test email', settings_email: 'Changed the email settings',
+  delete: 'Permanently deleted', backup: 'Downloaded a database backup', export: 'Exported participants', test_email: 'Sent a test email', payment: 'Paid:', settings_paypal: 'Changed the PayPal settings', store: 'Changed the store:', purchase: 'Changed a purchase for', settings_email: 'Changed the email settings',
   signout_all: 'Signed out everyone else', delete_tests: 'Deleted test participants',
 };
 
@@ -57,7 +57,7 @@ function logRows(ctx, rows) {
 <td><b>${l.actor_name}</b> ${ACTIONS[l.action] || l.action}${l.target_name ? html` ${l.target_id ? html`<a href="/admin/users/${l.target_id}">${l.target_name}</a>` : l.target_name}` : ''}${l.detail ? html`<small>${l.detail}</small>` : ''}</td></tr>`)}</tbody></table>`;
 }
 
-const tabs = (on) => html`<nav class="tabs">${[['/admin', 'App', 'app'], ['/admin/users', 'Logins', 'users'], ['/admin/settings', 'Settings', 'settings'], ['/admin/log', 'Activity log', 'log']].map(([h, l, k]) => html`<a href="${h}" class="${on === k ? 'on' : ''}">${l}</a>`)}</nav>`;
+const tabs = (on) => html`<nav class="tabs">${[['/admin', 'App', 'app'], ['/admin/users', 'Logins', 'users'], ['/admin/store', 'Store', 'store'], ['/admin/settings', 'Settings', 'settings'], ['/admin/log', 'Activity log', 'log']].map(([h, l, k]) => html`<a href="${h}" class="${on === k ? 'on' : ''}">${l}</a>`)}</nav>`;
 const pageHead = (title, sub) => html`<div class="page-head"><div><p class="eyebrow">Super admin</p><h1>${title}</h1>${sub ? html`<p class="muted">${sub}</p>` : ''}</div></div>`;
 
 const csvCell = (v) => {
@@ -406,7 +406,8 @@ ${keyBroken ? html`<p class="flash err">The saved API key can’t be read any mo
 <li><b>Domains → Add Domain</b>, add the DNS records it shows wherever that domain is managed, then <b>Verify</b>.</li>
 <li><b>API Keys → Create API Key</b> with “Sending access”, and paste it here.</li>
 <li>For “Send from”, use any address on that domain, e.g. <i>hello@yourdomain.com</i>.</li></ol>
-<h3 class="gap">${icon('cal')} Payments</h3><p class="muted">PayPal settings will go here.</p></section>
+</section>
+${require('./adminstore').paypalPanel(ctx, db)}
 </div>` }));
   }, O);
 
@@ -446,3 +447,7 @@ ${keyBroken ? html`<p class="flash err">The saved API key can’t be read any mo
 <p class="inline">${page > 1 ? html`<a class="btn small ghost" href="/admin/log?page=${page - 1}">← Newer</a>` : ''}${rows.length > 100 ? html`<a class="btn small ghost" href="/admin/log?page=${page + 1}">Older →</a>` : ''}</p></section>` }));
   }, O);
 };
+
+module.exports.tabs = tabs;
+module.exports.pageHead = pageHead;
+module.exports.logRows = logRows;
