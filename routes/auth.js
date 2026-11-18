@@ -113,6 +113,9 @@ ${mail.configured() ? html`<p class="muted">Enter your email and we’ll send yo
     ctx.html(bare('Check your email', html`<h2>Check your email</h2><p class="muted">If ${email} has an account, a link to choose a new password is on its way.</p><p class="auth-links"><a href="/login">Back to sign in</a></p>`));
   }, { public: true });
 
+  // ---- color palettes
+  r.get('/themes.css', (ctx) => ctx.send(200, require('../lib/themes').css(), 'text/css; charset=utf-8', { 'Cache-Control': 'public, max-age=31536000, immutable' }), { public: true });
+
   // ---- installable phone app
   r.get('/manifest.webmanifest', (ctx) => ctx.send(200, JSON.stringify({
     name: 'Life Audit 360', short_name: 'Life Audit', start_url: '/m', scope: '/', display: 'standalone',

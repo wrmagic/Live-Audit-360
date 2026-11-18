@@ -7,7 +7,7 @@ const auth = require('./lib/auth');
 const { html } = require('./lib/html');
 const { head } = require('./lib/views');
 
-const ROUTES = ['auth', 'participant', 'photos', 'testing', 'coach', 'coaches', 'videos', 'admin'];
+const ROUTES = ['auth', 'participant', 'photos', 'testing', 'coach', 'coaches', 'videos', 'admin', 'settings'];
 
 function createApp({ dbFile = process.env.DATABASE_FILE || path.join(__dirname, 'data', 'la360.db') } = {}) {
   const db = open(dbFile);
@@ -78,7 +78,7 @@ function createApp({ dbFile = process.env.DATABASE_FILE || path.join(__dirname, 
       const msg = status === 500 ? 'Something went wrong on our side. The error has been logged.' : err.message;
       if (ctx.wantsJson || req.headers['x-csrf']) return ctx.json({ error: msg }, status);
       const home = ctx.user ? (ctx.user.role === 'participant' ? '/m' : '/') : '/login';
-      ctx.html(html`${head('Error')}<body class="bare"><main class="error-page"><h1>${status === 404 ? 'Not found' : status === 403 ? 'Not allowed' : 'Something went wrong'}</h1><p>${msg}</p><p><a href="javascript:history.back()">Go back</a> or <a href="${home}">start over</a>.</p></main></body></html>`, status);
+      ctx.html(html`${head('Error', { user: ctx.user })}<body class="bare"><main class="error-page"><h1>${status === 404 ? 'Not found' : status === 403 ? 'Not allowed' : 'Something went wrong'}</h1><p>${msg}</p><p><a href="javascript:history.back()">Go back</a> or <a href="${home}">start over</a>.</p></main></body></html>`, status);
     }
   }
 

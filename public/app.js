@@ -107,6 +107,13 @@
     window.addEventListener('pagehide', () => { if (timer) { clearTimeout(timer); fetch(form.dataset.autosave, { method: 'POST', body: new URLSearchParams(new FormData(form)), headers: { 'x-autosave': '1' }, keepalive: true }); } });
   }
 
+  // ---------- My settings: show a color choice right away
+  const tf = $('form[data-theme-form]');
+  if (tf) tf.addEventListener('change', (e) => {
+    if (!['mode', 'light', 'dark'].includes(e.target.name)) return;
+    document.documentElement.setAttribute(`data-${e.target.name}`, e.target.value);
+  });
+
   // ---------- Week 2 priorities: pick exactly N areas (no more than three)
   $$('form[data-pick]').forEach((f) => {
     const n = Number(f.dataset.pick);

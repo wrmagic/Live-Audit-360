@@ -325,39 +325,14 @@ ${c.next ? html`<p class="hint">More unlocks on Day ${c.next}.</p>` : ''}`);
     const u = db.get('SELECT * FROM users WHERE id=?', ctx.user.id);
     const coach = u.coach_id ? db.get('SELECT name, email FROM users WHERE id=?', u.coach_id) : null;
     const { e, pos } = mine(ctx);
-    ctx.html(phone(ctx, { title: 'Me', tab: 'me', body: html`
-<section class="card me"><h2>${u.name}</h2><p class="muted">${u.email}</p>
+    ctx.html(phone(ctx, { title: 'My settings', tab: 'me', body: html`
+<section class="card me"><h2>${u.name}</h2>
 ${coach ? html`<p>Your coach: <b>${coach.name}</b> · <a href="mailto:${coach.email}">${coach.email}</a></p>` : ''}
-${e ? html`<p>Program: ${dateFmt(e.start_date)} – ${dateFmt(pos.endDate)}</p>` : ''}</section>
-<form method="post" action="/m/me" class="card">${csrfField(ctx)}<h3>Settings</h3>
-<label class="fld"><span>Time zone</span><select name="timezone">${[...new Set([u.timezone, ...ZONES])].map((z) => html`<option${z === u.timezone ? raw(' selected') : ''}>${z}</option>`)}</select></label>
-<p class="hint">Your program days change over at midnight in this time zone.</p>
-<button class="btn">Save</button></form>
-<form method="post" action="/m/me/password" class="card">${csrfField(ctx)}<h3>Change password</h3>
-<label class="fld"><span>Current password</span><input type="password" name="current" required autocomplete="current-password"></label>
-<label class="fld"><span>New password</span><input type="password" name="password" required minlength="8" autocomplete="new-password"></label>
-<button class="btn">Change password</button></form>
+${e ? html`<p class="muted">Program: ${dateFmt(e.start_date)} – ${dateFmt(pos.endDate)}</p>` : ''}</section>
+${require('./settings').settingsBody(ctx, u)}
 ${INSTALL}
 <form method="post" action="/logout" class="center">${csrfField(ctx)}<button class="btn ghost wide">${icon('logout')} Sign out</button></form>`,
     }));
-  }, O);
-
-  r.post('/m/me', (ctx) => {
-    const tz = str(ctx.body.timezone, 60);
-    try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); } catch { throw new HttpError(400, 'That time zone isn’t recognized.'); }
-    db.run('UPDATE users SET timezone=? WHERE id=?', tz, ctx.user.id);
-    ctx.setFlash('Saved.');
-    ctx.redirect('/m/me');
-  }, O);
-
-  r.post('/m/me/password', (ctx) => {
-    const u = db.get('SELECT * FROM users WHERE id=?', ctx.user.id);
-    if (!auth.verifyPassword(ctx.body.current || '', u.password_hash)) { ctx.setFlash('Your current password isn’t right.', 'err'); return ctx.redirect('/m/me'); }
-    if ((ctx.body.password || '').length < 8) { ctx.setFlash('Use at least 8 characters.', 'err'); return ctx.redirect('/m/me'); }
-    db.run('UPDATE users SET password_hash=? WHERE id=?', auth.hashPassword(ctx.body.password), u.id);
-    db.run('DELETE FROM sessions WHERE user_id=? AND token_hash<>?', u.id, ctx.user.token_hash);
-    ctx.setFlash('Password changed.');
-    ctx.redirect('/m/me');
   }, O);
 };
 

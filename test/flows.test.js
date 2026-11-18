@@ -493,3 +493,37 @@ test('super admin: only super admins get the Admin area; SUPER_ADMIN_EMAILS is a
   require('../lib/superadmin').ensure(db);
   assert.equal(db.get('SELECT is_super FROM users WHERE id=?', boss.id).is_super, 1);
 });
+
+test('My settings: appearance, profile and password, for coaches and participants', async (t) => {
+  const { server, db, base } = await setup();
+  t.after(() => server.close());
+  const c = client(base);
+  await c.login('other@x.test');
+  assert.match((await c.get('/participants')).text, /href="\/settings"[^>]*>.*class="avatar"[^>]*>OC</s, 'initials link to My settings');
+  await c.post('/settings/appearance', { mode: 'dark', light: 'daylight', dark: 'nightsky' });
+  assert.match((await c.get('/settings')).text, /<html lang="en" data-mode="dark" data-light="daylight" data-dark="nightsky">/);
+  await c.post('/settings/appearance', { mode: 'evil', light: 'x', dark: 'y' });
+  assert.match((await c.get('/settings')).text, /data-mode="light" data-light="sunset" data-dark="gold"/, 'bad values fall back to the defaults');
+  assert.match((await fetch(`${base}/themes.css`).then((r) => r.text())), /data-mode="auto"\]\[data-dark="gold"\]/);
+  // Email change needs the current password
+  await c.post('/settings/profile', { name: 'Olive Coach', email: 'olive@x.test', phone: '555', timezone: 'America/Denver' });
+  assert.equal(db.get("SELECT name FROM users WHERE email='other@x.test'").name, 'Other Coach', 'nothing saved without the password');
+  await c.post('/settings/profile', { name: 'Olive Coach', email: 'olive@x.test', phone: '555', timezone: 'America/Denver', current: 'password1' });
+  const u = db.get("SELECT * FROM users WHERE email='olive@x.test'");
+  assert.equal(u.timezone, 'America/Denver');
+  await c.post('/settings/password', { current: 'wrong', password: 'newpassword' });
+  assert.ok(auth.verifyPassword('password1', db.get('SELECT password_hash FROM users WHERE id=?', u.id).password_hash));
+  await c.post('/settings/password', { current: 'password1', password: 'newpassword' });
+  assert.equal((await client(base).login('olive@x.test', 'newpassword')).status, 303);
+  // Participants get the same settings in the phone app
+  const today = P.todayIn('America/Los_Angeles');
+  await c.post('/participants/new', { name: 'Quinn Phone', email: 'quinn@x.test', start_date: today, timezone: 'America/Los_Angeles' });
+  const q = db.get("SELECT * FROM users WHERE email='quinn@x.test'");
+  const qc = client(base);
+  await qc.post(`/invite/${q.invite_token}`, { password: 'quinnpassword', password2: 'quinnpassword' });
+  const me = await qc.get('/m/me');
+  assert.match(me.text, /Appearance/);
+  assert.equal((await qc.get('/settings')).location, '/m/me');
+  assert.equal((await qc.post('/settings/appearance', { mode: 'auto', light: 'sunset', dark: 'gold' })).location, '/m/me');
+  assert.match((await qc.get('/m')).text, /data-mode="auto"/);
+});
