@@ -22,6 +22,8 @@ services:
         sync: false          # the head coach's name, first start only
       - key: ADMIN_PASSWORD
         sync: false          # the head coach's password, first start only
+      - key: SUPER_ADMIN_EMAILS
+        value: james@wrmagic.com # always super admins (comma-separated); created on first start if missing
       - key: RESEND_API_KEY
         sync: false          # optional: send invite emails through resend.com
       - key: MAIL_FROM

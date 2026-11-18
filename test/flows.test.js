@@ -1,6 +1,7 @@
 'use strict';
 // End-to-end checks: invite → choose password → fill in the day → coach sees it; scoring; who can see what.
 process.env.NODE_ENV = 'test';
+process.env.SUPER_ADMIN_EMAILS = '';
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -18,7 +19,7 @@ function setup() {
   const server = createApp({ dbFile: path.join(dir, 'test.db') });
   const db = server.db;
   const t = new Date().toISOString();
-  const head = db.insert('users', { role: 'head', name: 'Head Coach', email: 'head@x.test', password_hash: auth.hashPassword('password1'), created_at: t });
+  const head = db.insert('users', { role: 'head', is_super: 1, name: 'Head Coach', email: 'head@x.test', password_hash: auth.hashPassword('password1'), created_at: t });
   const coach = db.insert('users', { role: 'coach', name: 'Other Coach', email: 'other@x.test', password_hash: auth.hashPassword('password1'), created_at: t });
   return new Promise((res) => server.listen(0, () => res({ server, db, head, coach, base: `http://127.0.0.1:${server.address().port}` })));
 }
@@ -424,7 +425,7 @@ test('admin: who can get in, logging in as, and every action logged', async (t) 
   assert.doesNotMatch(asCoach.text, /href="\/admin"/);
   await admin.post('/preview/exit');
   // Never as another admin, or yourself
-  const head2 = db.insert('users', { role: 'head', name: 'Second Admin', email: 'h2@x.test', password_hash: auth.hashPassword('password1'), created_at: new Date().toISOString() });
+  const head2 = db.insert('users', { role: 'head', is_super: 1, name: 'Second Admin', email: 'h2@x.test', password_hash: auth.hashPassword('password1'), created_at: new Date().toISOString() });
   assert.equal((await admin.post(`/admin/users/${head2}/login-as`)).status, 403);
 
   // Set a password: works, signs them out
@@ -463,4 +464,32 @@ test('admin: who can get in, logging in as, and every action logged', async (t) 
   const actions = db.all('SELECT action FROM admin_log').map((r) => r.action);
   for (const a of ['login_as', 'set_password', 'edit', 'deactivate', 'reactivate', 'backup', 'export', 'delete']) assert.ok(actions.includes(a), a);
   assert.match((await admin.get('/admin/log')).text, /Signed in as/);
+});
+
+
+test('super admin: only super admins get the Admin area; SUPER_ADMIN_EMAILS is always one', async (t) => {
+  const prev = process.env.SUPER_ADMIN_EMAILS;
+  process.env.SUPER_ADMIN_EMAILS = 'boss@x.test';
+  const { server, db, base } = await setup();
+  t.after(() => { server.close(); process.env.SUPER_ADMIN_EMAILS = prev; });
+  const boss = db.get("SELECT * FROM users WHERE email='boss@x.test'");
+  assert.ok(boss && boss.role === 'head' && boss.is_super === 1, 'created as super admin on start');
+  assert.ok(boss.invite_token, 'with a link to choose a password');
+  // A head coach who isn't a super admin: coaching yes, Admin no
+  db.insert('users', { role: 'head', name: 'Plain Head', email: 'plain@x.test', password_hash: auth.hashPassword('password1'), created_at: new Date().toISOString() });
+  const plain = client(base);
+  await plain.login('plain@x.test');
+  assert.equal((await plain.get('/participants')).status, 200);
+  assert.doesNotMatch((await plain.get('/participants')).text, /href="\/admin"/);
+  assert.equal((await plain.get('/admin')).status, 403);
+  // The protected super admin can't be demoted or turned off
+  const admin = client(base);
+  await admin.login('head@x.test');
+  await admin.post(`/admin/users/${boss.id}/edit`, { name: boss.name, email: boss.email, role: 'coach' });
+  assert.equal(db.get('SELECT is_super FROM users WHERE id=?', boss.id).is_super, 1);
+  assert.equal((await admin.post(`/admin/users/${boss.id}/deactivate`)).status, 400);
+  // Restarting re-applies it even if changed in the database
+  db.run("UPDATE users SET role='coach', is_super=0 WHERE id=?", boss.id);
+  require('../lib/superadmin').ensure(db);
+  assert.equal(db.get('SELECT is_super FROM users WHERE id=?', boss.id).is_super, 1);
 });

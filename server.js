@@ -11,6 +11,7 @@ const ROUTES = ['auth', 'participant', 'photos', 'testing', 'coach', 'coaches', 
 
 function createApp({ dbFile = process.env.DATABASE_FILE || path.join(__dirname, 'data', 'la360.db') } = {}) {
   const db = open(dbFile);
+  require('./lib/superadmin').ensure(db);
   const photoDir = process.env.PHOTO_DIR || path.join(path.dirname(path.resolve(dbFile === ':memory:' ? path.join(__dirname, 'data', 'x') : dbFile)), 'photos');
   const router = new Router();
   for (const r of ROUTES) require(`./routes/${r}`)(router, { db, photoDir });
@@ -52,6 +53,10 @@ function createApp({ dbFile = process.env.DATABASE_FILE || path.join(__dirname, 
         throw new HttpError(403, 'That page is for coaches.');
       }
       if (route.opts.head && role !== 'head') throw new HttpError(403, 'Only the head coach can do that.');
+      if (route.opts.super && !ctx.user.is_super) {
+        if (req.method === 'GET') throw new HttpError(403, 'Only super admins can open the Admin area.');
+        throw new HttpError(403, 'Only super admins can do that.');
+      }
 
       if (req.method === 'POST') {
         const buf = await readBody(req, route.opts.maxBody);

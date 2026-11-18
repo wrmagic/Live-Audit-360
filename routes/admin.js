@@ -17,8 +17,10 @@ const Pr = require('../lib/priorities');
 const { sendInvite, currentLink, baseUrl, str, validEmail } = require('../lib/site');
 const authRoutes = require('./auth');
 
-const O = { coach: true, head: true };
-const ROLE = { head: 'Head coach (admin)', coach: 'Coach', participant: 'Participant' };
+const O = { coach: true, super: true };
+const SA = require('../lib/superadmin');
+const ROLE = { super: 'Super admin', head: 'Head coach', coach: 'Coach', participant: 'Participant' };
+const level = (u) => (u.role === 'head' && u.is_super ? 'super' : u.role);
 const STARTED = Date.now();
 
 const ACTIONS = {
@@ -46,7 +48,7 @@ function getUser(db, id) {
   return u;
 }
 const liveSessions = (db, id) => db.get('SELECT COUNT(*) n FROM sessions WHERE user_id=? AND impersonated_by IS NULL AND expires_at > ?', id, new Date().toISOString()).n;
-const activeHeads = (db) => db.get("SELECT COUNT(*) n FROM users WHERE role='head' AND active=1").n;
+const activeSupers = (db) => db.get("SELECT COUNT(*) n FROM users WHERE role='head' AND is_super=1 AND active=1").n;
 
 function logRows(ctx, rows) {
   if (!rows.length) return html`<p class="muted">Nothing yet.</p>`;
@@ -211,7 +213,7 @@ ${people.tests ? html`<form method="post" action="/admin/delete-tests" class="ga
 <label class="check"><input type="checkbox" name="tests" value="1"${showTests ? raw(' checked') : ''} data-autosubmit> Tests</label><input type="search" name="q" value="${q}" placeholder="Search name or email"></form></div>
 ${list.length ? html`<table class="list"><thead><tr><th>Name</th><th>Role</th><th>Status</th><th>Last seen</th><th>Signed in on</th><th></th></tr></thead><tbody>
 ${list.map((u) => html`<tr data-href="/admin/users/${u.id}" class="${u.active ? '' : 'off'}"><td><a href="/admin/users/${u.id}"><b>${u.name}</b></a><small>${u.is_test ? 'Test participant' : u.email}${u.coach_name ? ` · Coach: ${u.coach_name}` : ''}</small></td>
-<td>${u.role === 'head' ? html`<span class="pill on">Admin</span>` : u.role === 'coach' ? html`<span class="pill">Coach</span>` : 'Participant'}</td>
+<td>${level(u) === 'super' ? html`<span class="pill on">Super admin</span>` : u.role === 'head' ? html`<span class="pill">Head coach</span>` : u.role === 'coach' ? html`<span class="pill">Coach</span>` : 'Participant'}</td>
 <td>${!u.active ? html`<span class="pill">Off</span>` : u.password_hash ? html`<span class="pill done">Active</span>` : html`<span class="pill warn">Invite pending</span>`}${authRoutes.isLocked(u.email) ? html` <span class="pill warn">Locked</span>` : ''}</td>
 <td>${u.last_seen ? dateTimeFmt(u.last_seen, ctx.user.timezone) : html`<span class="muted">Never</span>`}</td>
 <td>${u.sessions ? `${u.sessions} device${u.sessions === 1 ? '' : 's'}` : html`<span class="muted">—</span>`}</td>
@@ -219,7 +221,7 @@ ${list.map((u) => html`<tr data-href="/admin/users/${u.id}" class="${u.active ? 
 </tbody></table>${list.length === 500 ? html`<p class="hint">Showing the first 500. Search to narrow it down.</p>` : ''}` : html`<div class="empty">${icon('people')}<p>No one matches.</p></div>`}` }));
   }, O);
 
-  const canLoginAs = (ctx, u) => u.active && u.id !== ctx.user.id && u.role !== 'head';
+  const canLoginAs = (ctx, u) => u.active && u.id !== ctx.user.id && !u.is_super;
 
   r.get('/admin/users/:id', (ctx) => {
     const u = getUser(db, ctx.params.id);
@@ -234,7 +236,7 @@ ${list.map((u) => html`<tr data-href="/admin/users/${u.id}" class="${u.active ? 
     const history = db.all('SELECT * FROM admin_log WHERE target_id=? ORDER BY id DESC LIMIT 15', u.id);
     const staff = db.all("SELECT id, name FROM users WHERE role IN ('head','coach') AND active=1 AND id<>? ORDER BY name", u.id);
     ctx.html(layout(ctx, { title: u.name, nav: 'admin', body: html`<div class="page-head person"><div><p class="eyebrow"><a href="/admin/users">Logins</a></p><h1>${u.name}</h1>
-<p class="muted">${u.is_test ? html`<span class="pill test">Test participant</span>` : u.email} · ${ROLE[u.role]}${coach ? html` · Coach: ${coach.name}` : ''}${self ? ' · This is you' : ''}</p></div>
+<p class="muted">${u.is_test ? html`<span class="pill test">Test participant</span>` : u.email} · ${ROLE[level(u)]}${SA.isProtected(u.email) ? ' (set by the app’s settings)' : ''}${coach ? html` · Coach: ${coach.name}` : ''}${self ? ' · This is you' : ''}</p></div>
 <div class="head-state">${!u.active ? html`<span class="pill">Turned off</span>` : u.password_hash ? html`<span class="pill done">Active</span>` : html`<span class="pill warn">Invite pending</span>`}${locked ? html` <span class="pill warn">Sign-in locked</span>` : ''}
 <small>Joined ${dateFmt(u.created_at.slice(0, 10))} · Last seen ${u.last_seen ? dateTimeFmt(u.last_seen, ctx.user.timezone) : 'never'}</small></div></div>
 <div class="cols">
@@ -256,7 +258,7 @@ ${locked ? html`<form method="post" action="/admin/users/${u.id}/unlock">${csrfF
 ${!u.is_test ? html`<form method="post" action="/admin/users/${u.id}/edit" class="panel">${csrfField(ctx)}<h3>Details</h3>
 <label class="fld"><span>Name</span><input name="name" value="${u.name}" required maxlength="100"></label>
 <label class="fld"><span>Email (their sign-in)</span><input type="email" name="email" value="${u.email}" required></label>
-${u.role !== 'participant' ? html`<label class="fld"><span>Role</span><select name="role"${self ? raw(' disabled') : ''}><option value="coach"${u.role === 'coach' ? raw(' selected') : ''}>Coach: sees their own clients</option><option value="head"${u.role === 'head' ? raw(' selected') : ''}>Head coach (admin): sees everyone, runs the app</option></select>${self ? html`<span class="hint">You can’t change your own role.</span>` : ''}</label>` : ''}
+${u.role !== 'participant' ? html`<label class="fld"><span>Role</span><select name="role"${self || SA.isProtected(u.email) ? raw(' disabled') : ''}>${[['coach', 'Coach: sees their own clients'], ['head', 'Head coach: sees every client, manages coaches and content'], ['super', 'Super admin: head coach plus this Admin area']].map(([k, l]) => html`<option value="${k}"${level(u) === k ? raw(' selected') : ''}>${l}</option>`)}</select>${self ? html`<span class="hint">You can’t change your own role.</span>` : SA.isProtected(u.email) ? html`<span class="hint">This super admin is set in the app’s settings (SUPER_ADMIN_EMAILS) and can’t be changed here.</span>` : ''}</label>` : ''}
 <button class="btn">Save</button></form>` : ''}
 <section class="panel danger"><h3>Access</h3>
 ${u.active ? (self ? html`<p class="muted">You can’t turn off your own login.</p>` : html`<form method="post" action="/admin/users/${u.id}/deactivate">${csrfField(ctx)}
@@ -272,7 +274,7 @@ ${u.role === 'participant' ? html`<form method="post" action="/admin/users/${u.i
 
   r.post('/admin/users/:id/login-as', (ctx) => {
     const u = getUser(db, ctx.params.id);
-    if (!canLoginAs(ctx, u)) throw new HttpError(403, u.role === 'head' ? 'You can’t sign in as another admin.' : 'That login is turned off.');
+    if (!canLoginAs(ctx, u)) throw new HttpError(403, u.is_super ? 'You can’t sign in as another super admin.' : u.id === ctx.user.id ? 'That’s you.' : 'That login is turned off.');
     if (ctx.user.impersonated_by) throw new HttpError(403, 'Go back to your own login first.');
     ctx.setCookie('coach_sid', ctx.sessionToken, { maxAge: 12 * 3600 });
     ctx.setCookie('return_to', `/admin/users/${u.id}`, { maxAge: 12 * 3600 });
@@ -328,10 +330,12 @@ ${u.role === 'participant' ? html`<form method="post" action="/admin/users/${u.i
     const changes = [];
     if (name !== u.name) changes.push(`name: ${u.name} → ${name}`);
     if (email !== u.email) changes.push(`email: ${u.email} → ${email}`);
-    if (u.role !== 'participant' && u.id !== ctx.user.id && ['coach', 'head'].includes(ctx.body.role) && ctx.body.role !== u.role) {
-      if (u.role === 'head' && u.active && activeHeads(db) <= 1) { ctx.setFlash('There must always be at least one admin.', 'err'); return ctx.redirect(`/admin/users/${u.id}`); }
-      upd.role = ctx.body.role;
-      changes.push(`role: ${ROLE[u.role]} → ${ROLE[upd.role]}`);
+    const want = ctx.body.role;
+    if (u.role !== 'participant' && u.id !== ctx.user.id && !SA.isProtected(u.email) && ['coach', 'head', 'super'].includes(want) && want !== level(u)) {
+      if (level(u) === 'super' && u.active && activeSupers(db) <= 1) { ctx.setFlash('There must always be at least one super admin.', 'err'); return ctx.redirect(`/admin/users/${u.id}`); }
+      upd.role = want === 'coach' ? 'coach' : 'head';
+      upd.is_super = want === 'super' ? 1 : 0;
+      changes.push(`role: ${ROLE[level(u)]} → ${ROLE[want]}`);
     }
     db.update('users', u.id, upd);
     if (changes.length) audit.log(db, ctx.user, 'edit', { id: u.id, name }, changes.join('; '));
@@ -342,7 +346,8 @@ ${u.role === 'participant' ? html`<form method="post" action="/admin/users/${u.i
   r.post('/admin/users/:id/deactivate', (ctx) => {
     const u = getUser(db, ctx.params.id);
     if (u.id === ctx.user.id) throw new HttpError(400, 'You can’t turn off your own login.');
-    if (u.role === 'head' && activeHeads(db) <= 1) throw new HttpError(400, 'There must always be at least one admin.');
+    if (SA.isProtected(u.email)) throw new HttpError(400, 'This super admin is set in the app’s settings and can’t be turned off here.');
+    if (u.is_super && activeSupers(db) <= 1) throw new HttpError(400, 'There must always be at least one super admin.');
     let moved = 0;
     db.tx(() => {
       if (u.role !== 'participant') {
